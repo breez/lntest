@@ -12,6 +12,12 @@ var (
 	bitcoindExecutable = flag.String(
 		"bitcoindexec", "", "full path to bitcoind binary",
 	)
+	bitcoinCliExecutable = flag.String(
+		"bitcoincliexec", "", "full path to bitcoin-cli binary",
+	)
+	lightningdExecutable = flag.String(
+		"lightningdexec", "", "full path to lightningd binary",
+	)
 )
 
 func CheckError(t *testing.T, err error) {
@@ -21,7 +27,7 @@ func CheckError(t *testing.T, err error) {
 	}
 }
 
-func GetPort() (int, error) {
+func GetPort() (uint32, error) {
 	addr, err := net.ResolveTCPAddr("tcp", "localhost:0")
 	if err != nil {
 		return 0, err
@@ -31,7 +37,7 @@ func GetPort() (int, error) {
 		return 0, err
 	}
 	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port, nil
+	return uint32(l.Addr().(*net.TCPAddr).Port), nil
 }
 
 func GetBitcoindBinary() (string, error) {
@@ -40,4 +46,20 @@ func GetBitcoindBinary() (string, error) {
 	}
 
 	return exec.LookPath("bitcoind")
+}
+
+func GetBitcoinCliBinary() (string, error) {
+	if bitcoinCliExecutable != nil {
+		return *bitcoinCliExecutable, nil
+	}
+
+	return exec.LookPath("bitcoin-cli")
+}
+
+func GetLightningdBinary() (string, error) {
+	if lightningdExecutable != nil {
+		return *lightningdExecutable, nil
+	}
+
+	return exec.LookPath("lightningd")
 }

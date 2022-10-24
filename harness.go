@@ -36,7 +36,12 @@ func (h *TestHarness) TearDown() error {
 	h.mtx.Lock()
 	defer h.mtx.Unlock()
 
-	h.cancel()
+	for _, node := range h.nodes {
+		if err := node.TearDown(); err != nil {
+			return err
+		}
+	}
+
 	for _, miner := range h.miners {
 		if err := miner.TearDown(); err != nil {
 			return err
@@ -47,6 +52,7 @@ func (h *TestHarness) TearDown() error {
 		return err
 	}
 
+	h.cancel()
 	return nil
 }
 

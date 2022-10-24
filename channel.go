@@ -3,7 +3,7 @@ package lntest
 import (
 	"time"
 
-	"github.com/niftynei/glightning/glightning"
+	"github.com/breez/lntest/core_lightning"
 	"golang.org/x/exp/slices"
 )
 
@@ -20,25 +20,32 @@ type ChannelInfo struct {
 func (c *ChannelInfo) WaitForChannelReady() {
 	timeout := time.Now().Add(time.Duration(defaultTimeout) * time.Second)
 	for {
-		info, err := c.To.rpc.GetInfo()
+		info, err := c.To.rpc.Getinfo(c.From.harness.ctx, &core_lightning.GetinfoRequest{})
 		CheckError(c.To.harness.T, err)
 
-		peer, err := c.From.rpc.GetPeer(info.Id)
+		peers, err := c.From.rpc.ListPeers(c.From.harness.ctx, &core_lightning.ListpeersRequest{
+			Id: info.Id,
+		})
 		CheckError(c.From.harness.T, err)
 
+		if len(peers.Peers) == 0 {
+			c.From.harness.T.Fatalf("Peer %s not found", string(info.Id))
+		}
+
+		peer := peers.Peers[0]
 		if peer.Channels == nil {
 			c.From.harness.T.Fatal("no channels for peer")
 		}
 
 		channelIndex := slices.IndexFunc(
 			peer.Channels,
-			func(pc *glightning.PeerChannel) bool {
-				return pc.ChannelId == c.ChannelId
+			func(pc *core_lightning.ListpeersPeersChannels) bool {
+				return string(pc.ChannelId) == c.ChannelId
 			},
 		)
 
 		if channelIndex >= 0 {
-			if peer.Channels[channelIndex].State == "CHANNELD_NORMAL" {
+			if peer.Channels[channelIndex].State == core_lightning.ListpeersPeersChannels_CHANNELD_NORMAL {
 				return
 			}
 		}

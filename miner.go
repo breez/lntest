@@ -16,7 +16,7 @@ type Miner struct {
 	harness *TestHarness
 	dir     string
 	rpc     *gbitcoin.Bitcoin
-	rpcPort int
+	rpcPort uint32
 	cmd     *exec.Cmd
 }
 
@@ -39,13 +39,14 @@ func NewMiner(h *TestHarness) *Miner {
 		"-nolisten",
 		"-addresstype=bech32",
 		"-txindex",
+		"-fallbackfee=0.00000253",
 		fmt.Sprintf("-datadir=%s", bitcoindDir),
 		fmt.Sprintf("-rpcport=%d", rpcPort),
 		fmt.Sprintf("-rpcpassword=%s", btcPass),
 		fmt.Sprintf("-rpcuser=%s", btcUser),
 	}
 
-	log.Printf("starting %s on rpc port %d...", binary, rpcPort)
+	log.Printf("starting %s on rpc port %d in dir %s...", binary, rpcPort, bitcoindDir)
 	cmd := exec.CommandContext(h.ctx, binary, args...)
 
 	err = cmd.Start()
@@ -54,12 +55,17 @@ func NewMiner(h *TestHarness) *Miner {
 
 	rpc := gbitcoin.NewBitcoin(btcUser, btcPass)
 	rpc.SetTimeout(uint(2))
-	rpc.StartUp("", bitcoindDir, uint(rpcPort))
+
+	log.Printf("Starting up bitcoin client")
+	rpc.StartUp("http://localhost", bitcoindDir, uint(rpcPort))
 
 	// Go ahead and run 50 blocks
+	log.Printf("Get new address")
 	addr, err := rpc.GetNewAddress(gbitcoin.Bech32)
 	CheckError(h.T, err)
-	_, err = rpc.GenerateToAddress(addr, 101)
+
+	log.Printf("Generate to address")
+	_, err = rpc.GenerateToAddress(addr, 200)
 	CheckError(h.T, err)
 
 	miner := &Miner{
@@ -85,10 +91,20 @@ func (m *Miner) MineBlocks(n uint) {
 }
 
 func (m *Miner) SendToAddress(addr string, amountSat uint64) {
-	_, err := m.rpc.SendToAddress(addr, strconv.FormatUint(amountSat, 10))
+	amountBtc := amountSat / uint64(100000000)
+	amountSatRemainder := amountSat % 100000000
+	amountStr := strconv.FormatUint(amountBtc, 10) + "." + fmt.Sprintf("%08s", strconv.FormatUint(amountSatRemainder, 10))
+	log.Printf("Sending %s btc to address %s", amountStr, addr)
+	_, err := m.rpc.SendToAddress(addr, amountStr)
 	CheckError(m.harness.T, err)
 
 	m.MineBlocks(1)
+}
+
+func (m *Miner) GetBlockHeight() uint32 {
+	info, err := m.rpc.GetChainInfo()
+	CheckError(m.harness.T, err)
+	return info.Blocks
 }
 
 func (m *Miner) TearDown() error {
