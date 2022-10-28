@@ -10,12 +10,12 @@ import (
 
 type TestHarness struct {
 	*testing.T
-	ctx    context.Context
+	Ctx    context.Context
 	cancel context.CancelFunc
 	dir    string
 	mtx    sync.RWMutex
 	miners []*Miner
-	nodes  map[string]*LightningNode
+	nodes  map[string]LightningNode
 }
 
 func NewTestHarness(t *testing.T) *TestHarness {
@@ -25,10 +25,10 @@ func NewTestHarness(t *testing.T) *TestHarness {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &TestHarness{
 		T:      t,
-		ctx:    ctx,
+		Ctx:    ctx,
 		cancel: cancel,
 		dir:    testDir,
-		nodes:  make(map[string]*LightningNode),
+		nodes:  make(map[string]LightningNode),
 	}
 }
 

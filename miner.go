@@ -47,7 +47,7 @@ func NewMiner(h *TestHarness) *Miner {
 	}
 
 	log.Printf("starting %s on rpc port %d in dir %s...", binary, rpcPort, bitcoindDir)
-	cmd := exec.CommandContext(h.ctx, binary, args...)
+	cmd := exec.CommandContext(h.Ctx, binary, args...)
 
 	err = cmd.Start()
 	CheckError(h.T, err)

@@ -23,8 +23,9 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
-type LightningNode struct {
+type CoreLightningNode struct {
 	name     string
+	nodeId   []byte
 	harness  *TestHarness
 	miner    *Miner
 	cmd      *exec.Cmd
@@ -36,7 +37,7 @@ type LightningNode struct {
 	grpcPort *uint32
 }
 
-func NewCoreLightningNode(h *TestHarness, m *Miner, name string) *LightningNode {
+func NewCoreLightningNode(h *TestHarness, m *Miner, name string, env []string, extraArgs ...string) *CoreLightningNode {
 	lightningdDir, err := ioutil.TempDir(h.dir, fmt.Sprintf("lightningd-%s", name))
 	CheckError(h.T, err)
 
@@ -71,7 +72,8 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string) *LightningNode 
 		fmt.Sprintf("--bitcoin-cli=%s", bitcoinCliBinary),
 	}
 
-	cmd := exec.CommandContext(h.ctx, binary, args...)
+	cmd := exec.CommandContext(h.Ctx, binary, append(args, extraArgs...)...)
+	cmd.Env = env
 	stderr, err := cmd.StderrPipe()
 	CheckError(h.T, err)
 
@@ -134,9 +136,12 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string) *LightningNode 
 	CheckError(h.T, err)
 
 	client := core_lightning.NewNodeClient(conn)
+	info, err := client.Getinfo(h.Ctx, &core_lightning.GetinfoRequest{})
+	CheckError(h.T, err)
 
-	node := &LightningNode{
+	node := &CoreLightningNode{
 		name:     name,
+		nodeId:   info.Id,
 		harness:  h,
 		miner:    m,
 		cmd:      cmd,
@@ -189,9 +194,13 @@ func waitForLog(t *testing.T, logfilePath string, phrase string, timeoutSec int)
 	t.Fatalf("Unable to find \"%s\" in %s", phrase, logfilePath)
 }
 
-func (n *LightningNode) WaitForSync() {
+func (n *CoreLightningNode) NodeId() []byte {
+	return n.nodeId
+}
+
+func (n *CoreLightningNode) WaitForSync() {
 	for {
-		info, _ := n.rpc.Getinfo(n.harness.ctx, &core_lightning.GetinfoRequest{})
+		info, _ := n.rpc.Getinfo(n.harness.Ctx, &core_lightning.GetinfoRequest{})
 
 		blockHeight := n.miner.GetBlockHeight()
 
@@ -211,7 +220,7 @@ func (n *LightningNode) WaitForSync() {
 	}
 }
 
-func (n *LightningNode) Fund(amountSat uint64) {
+func (n *CoreLightningNode) Fund(amountSat uint64) {
 	addrResponse, err := n.rpc.NewAddr(
 		context.Background(),
 		&core_lightning.NewaddrRequest{
@@ -228,11 +237,11 @@ type OpenChannelOptions struct {
 	FeePerKw  uint
 }
 
-func (n *LightningNode) OpenChannel(peer *LightningNode, options *OpenChannelOptions) *ChannelInfo {
-	peerInfo, err := peer.rpc.Getinfo(n.harness.ctx, &core_lightning.GetinfoRequest{})
+func (n *CoreLightningNode) OpenChannel(peer *CoreLightningNode, options *OpenChannelOptions) *ChannelInfo {
+	peerInfo, err := peer.rpc.Getinfo(n.harness.Ctx, &core_lightning.GetinfoRequest{})
 	CheckError(n.harness.T, err)
 
-	peerId, err := n.rpc.ConnectPeer(n.harness.ctx, &core_lightning.ConnectRequest{
+	peerId, err := n.rpc.ConnectPeer(n.harness.Ctx, &core_lightning.ConnectRequest{
 		Id:   hex.EncodeToString(peerInfo.Id),
 		Host: peer.host,
 		Port: peer.port,
@@ -246,7 +255,7 @@ func (n *LightningNode) OpenChannel(peer *LightningNode, options *OpenChannelOpt
 
 	// open a channel
 	announce := true
-	fundResult, err := n.rpc.FundChannel(n.harness.ctx, &core_lightning.FundchannelRequest{
+	fundResult, err := n.rpc.FundChannel(n.harness.Ctx, &core_lightning.FundchannelRequest{
 		Id: peerId.Id,
 		Amount: &core_lightning.AmountOrAll{
 			Value: &core_lightning.AmountOrAll_Amount{
@@ -273,7 +282,86 @@ func (n *LightningNode) OpenChannel(peer *LightningNode, options *OpenChannelOpt
 	}
 }
 
-func (n *LightningNode) TearDown() error {
+type CreateInvoiceOptions struct {
+	AmountMsat  uint64
+	Description *string
+	Preimage    *[]byte
+}
+
+type CreateInvoiceResult struct {
+	Bolt11        string
+	PaymentHash   []byte
+	PaymentSecret []byte
+	ExpiresAt     uint64
+}
+
+func (n *CoreLightningNode) CreateBolt11Invoice(options *CreateInvoiceOptions) *CreateInvoiceResult {
+	req := &core_lightning.InvoiceRequest{
+		AmountMsat: &core_lightning.AmountOrAny{
+			Value: &core_lightning.AmountOrAny_Amount{
+				Amount: &core_lightning.Amount{
+					Msat: options.AmountMsat,
+				},
+			},
+		},
+	}
+
+	if options.Description != nil {
+		req.Description = *options.Description
+	}
+
+	if options.Preimage != nil {
+		req.Preimage = *options.Preimage
+	}
+
+	resp, err := n.rpc.Invoice(n.harness.Ctx, req)
+	CheckError(n.harness.T, err)
+
+	return &CreateInvoiceResult{
+		Bolt11:        resp.Bolt11,
+		PaymentHash:   resp.PaymentHash,
+		PaymentSecret: resp.PaymentSecret,
+		ExpiresAt:     resp.ExpiresAt,
+	}
+}
+
+func (n *CoreLightningNode) AddInvoice(bolt11 string, preimage []byte) *CreateInvoiceResult {
+	resp, err := n.rpc.CreateInvoice(n.harness.Ctx, &core_lightning.CreateinvoiceRequest{
+		Invstring: bolt11,
+		Preimage:  preimage,
+	})
+	CheckError(n.harness.T, err)
+
+	return &CreateInvoiceResult{
+		Bolt11:      *resp.Bolt11,
+		PaymentHash: resp.PaymentHash,
+		ExpiresAt:   resp.ExpiresAt,
+	}
+}
+
+type PayResult struct {
+	PaymentHash []byte
+}
+
+func (n *CoreLightningNode) Pay(bolt11 string) *PayResult {
+	resp, err := n.rpc.Pay(n.harness.Ctx, &core_lightning.PayRequest{
+		Bolt11: bolt11,
+	})
+	CheckError(n.harness.T, err)
+
+	return &PayResult{
+		PaymentHash: resp.PaymentHash,
+	}
+}
+
+func (n *CoreLightningNode) WaitPaymentComplete(paymentHash []byte) {
+	_, err := n.rpc.WaitSendPay(n.harness.Ctx, &core_lightning.WaitsendpayRequest{
+		PaymentHash: paymentHash,
+	})
+	CheckError(n.harness.T, err)
+}
+
+func (n *CoreLightningNode) TearDown() error {
 	if err := n.stop(); err != nil {
 		return err
 	}
@@ -285,7 +373,7 @@ func (n *LightningNode) TearDown() error {
 	return nil
 }
 
-func (n *LightningNode) stop() error {
+func (n *CoreLightningNode) stop() error {
 	if n.cmd == nil || n.cmd.Process == nil {
 		// return if not properly initialized
 		// or error starting the process
@@ -300,6 +388,6 @@ func (n *LightningNode) stop() error {
 	return n.cmd.Process.Signal(os.Interrupt)
 }
 
-func (n *LightningNode) cleanup() error {
+func (n *CoreLightningNode) cleanup() error {
 	return os.RemoveAll(n.dir)
 }

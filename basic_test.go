@@ -12,10 +12,10 @@ func TestOpenChannel(t *testing.T) {
 	miner := NewMiner(harness)
 
 	log.Print("Initializing Alice")
-	alice := NewCoreLightningNode(harness, miner, "Alice")
+	alice := NewCoreLightningNode(harness, miner, "Alice", make([]string, 0))
 
 	log.Print("Initializing Bob")
-	bob := NewCoreLightningNode(harness, miner, "Bob")
+	bob := NewCoreLightningNode(harness, miner, "Bob", make([]string, 0))
 
 	log.Print("Funding alice")
 	alice.Fund(10000000)

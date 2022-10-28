@@ -10,8 +10,8 @@ import (
 const defaultTimeout int = 10
 
 type ChannelInfo struct {
-	From        *LightningNode
-	To          *LightningNode
+	From        *CoreLightningNode
+	To          *CoreLightningNode
 	FundingTx   string
 	FundingTxId string
 	ChannelId   string
@@ -20,10 +20,10 @@ type ChannelInfo struct {
 func (c *ChannelInfo) WaitForChannelReady() {
 	timeout := time.Now().Add(time.Duration(defaultTimeout) * time.Second)
 	for {
-		info, err := c.To.rpc.Getinfo(c.From.harness.ctx, &core_lightning.GetinfoRequest{})
+		info, err := c.To.rpc.Getinfo(c.From.harness.Ctx, &core_lightning.GetinfoRequest{})
 		CheckError(c.To.harness.T, err)
 
-		peers, err := c.From.rpc.ListPeers(c.From.harness.ctx, &core_lightning.ListpeersRequest{
+		peers, err := c.From.rpc.ListPeers(c.From.harness.Ctx, &core_lightning.ListpeersRequest{
 			Id: info.Id,
 		})
 		CheckError(c.From.harness.T, err)
