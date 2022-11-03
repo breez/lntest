@@ -1,6 +1,7 @@
 package lntest
 
 import (
+	"log"
 	"time"
 
 	"github.com/breez/lntest/core_lightning"
@@ -45,8 +46,19 @@ func (c *ChannelInfo) WaitForChannelReady() {
 		)
 
 		if channelIndex >= 0 {
-			if peer.Channels[channelIndex].State == core_lightning.ListpeersPeersChannels_CHANNELD_NORMAL {
-				return
+			peerChannel := peer.Channels[channelIndex]
+			if peerChannel.State == core_lightning.ListpeersPeersChannels_CHANNELD_NORMAL {
+				log.Printf("peerChannel short channel id: %s", *peerChannel.ShortChannelId)
+				channelsResp, err := c.From.rpc.ListChannels(c.From.harness.Ctx, &core_lightning.ListchannelsRequest{
+					ShortChannelId: peerChannel.ShortChannelId,
+				})
+				CheckError(c.From.harness.T, err)
+
+				// Wait for the channel to end up in the listchannels response.
+				if len(channelsResp.Channels) > 0 &&
+					channelsResp.Channels[0].Active {
+					return
+				}
 			}
 		}
 

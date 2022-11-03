@@ -37,8 +37,8 @@ type CoreLightningNode struct {
 	grpcPort *uint32
 }
 
-func NewCoreLightningNode(h *TestHarness, m *Miner, name string, env []string, extraArgs ...string) *CoreLightningNode {
-	lightningdDir, err := ioutil.TempDir(h.dir, fmt.Sprintf("lightningd-%s", name))
+func NewCoreLightningNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *CoreLightningNode {
+	lightningdDir, err := ioutil.TempDir(h.Dir, fmt.Sprintf("ld-%s", name))
 	CheckError(h.T, err)
 
 	host := "localhost"
@@ -56,7 +56,6 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, env []string, e
 
 	args := []string{
 		"--network=regtest",
-		"--funding-confirms=3",
 		"--log-file=log",
 		"--log-level=debug",
 		"--bitcoin-rpcuser=btcuser",
@@ -73,14 +72,13 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, env []string, e
 	}
 
 	cmd := exec.CommandContext(h.Ctx, binary, append(args, extraArgs...)...)
-	cmd.Env = env
 	stderr, err := cmd.StderrPipe()
 	CheckError(h.T, err)
 
 	stdout, err := cmd.StdoutPipe()
 	CheckError(h.T, err)
 
-	log.Printf("starting %s on port %d in dir %s...", binary, port, lightningdDir)
+	log.Printf("%s: starting %s on port %d in dir %s...", name, binary, port, lightningdDir)
 	err = cmd.Start()
 	CheckError(h.T, err)
 
@@ -89,7 +87,7 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, env []string, e
 		log.Printf("Starting stderr scanner")
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
-			log.Println(scanner.Text())
+			log.Println(name + ": " + scanner.Text())
 		}
 	}()
 
@@ -98,16 +96,16 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, env []string, e
 		log.Printf("Starting stdout scanner")
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
-			log.Println(scanner.Text())
+			log.Println(name + ": " + scanner.Text())
 		}
 	}()
 
 	go func() {
 		err := cmd.Wait()
 		if err != nil && err.Error() != "signal: interrupt" {
-			log.Printf("lightningd exited with error %s", err)
+			log.Printf(name+": "+"lightningd exited with error %s", err)
 		}
-		log.Printf("process exited normally")
+		log.Printf(name + ": " + "process exited normally")
 	}()
 
 	regtestDir := filepath.Join(lightningdDir, "regtest")
@@ -138,6 +136,8 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, env []string, e
 	client := core_lightning.NewNodeClient(conn)
 	info, err := client.Getinfo(h.Ctx, &core_lightning.GetinfoRequest{})
 	CheckError(h.T, err)
+
+	log.Printf("%s: Has node id %x", name, info.Id)
 
 	node := &CoreLightningNode{
 		name:     name,
@@ -198,6 +198,18 @@ func (n *CoreLightningNode) NodeId() []byte {
 	return n.nodeId
 }
 
+func (n *CoreLightningNode) Host() *string {
+	return n.host
+}
+
+func (n *CoreLightningNode) Port() *uint32 {
+	return n.port
+}
+
+func (n *CoreLightningNode) PrivateKey() []byte {
+	return n.nodeId
+}
+
 func (n *CoreLightningNode) WaitForSync() {
 	for {
 		info, _ := n.rpc.Getinfo(n.harness.Ctx, &core_lightning.GetinfoRequest{})
@@ -237,16 +249,20 @@ type OpenChannelOptions struct {
 	FeePerKw  uint
 }
 
+func (n *CoreLightningNode) ConnectPeer(nodeId []byte, host *string, port *uint32) {
+	_, err := n.rpc.ConnectPeer(n.harness.Ctx, &core_lightning.ConnectRequest{
+		Id:   hex.EncodeToString(nodeId),
+		Host: host,
+		Port: port,
+	})
+	CheckError(n.harness.T, err)
+}
+
 func (n *CoreLightningNode) OpenChannel(peer *CoreLightningNode, options *OpenChannelOptions) *ChannelInfo {
 	peerInfo, err := peer.rpc.Getinfo(n.harness.Ctx, &core_lightning.GetinfoRequest{})
 	CheckError(n.harness.T, err)
 
-	peerId, err := n.rpc.ConnectPeer(n.harness.Ctx, &core_lightning.ConnectRequest{
-		Id:   hex.EncodeToString(peerInfo.Id),
-		Host: peer.host,
-		Port: peer.port,
-	})
-	CheckError(n.harness.T, err)
+	n.ConnectPeer(peerInfo.Id, peer.host, peer.port)
 
 	feePerKw := options.FeePerKw
 	if feePerKw == 0 {
@@ -256,7 +272,7 @@ func (n *CoreLightningNode) OpenChannel(peer *CoreLightningNode, options *OpenCh
 	// open a channel
 	announce := true
 	fundResult, err := n.rpc.FundChannel(n.harness.Ctx, &core_lightning.FundchannelRequest{
-		Id: peerId.Id,
+		Id: peerInfo.Id,
 		Amount: &core_lightning.AmountOrAll{
 			Value: &core_lightning.AmountOrAll_Amount{
 				Amount: &core_lightning.Amount{
@@ -286,6 +302,7 @@ type CreateInvoiceOptions struct {
 	AmountMsat  uint64
 	Description *string
 	Preimage    *[]byte
+	Label       *string
 }
 
 type CreateInvoiceResult struct {
@@ -314,6 +331,10 @@ func (n *CoreLightningNode) CreateBolt11Invoice(options *CreateInvoiceOptions) *
 		req.Preimage = *options.Preimage
 	}
 
+	if options.Label != nil {
+		req.Label = *options.Label
+	}
+
 	resp, err := n.rpc.Invoice(n.harness.Ctx, req)
 	CheckError(n.harness.T, err)
 
@@ -325,10 +346,11 @@ func (n *CoreLightningNode) CreateBolt11Invoice(options *CreateInvoiceOptions) *
 	}
 }
 
-func (n *CoreLightningNode) AddInvoice(bolt11 string, preimage []byte) *CreateInvoiceResult {
+func (n *CoreLightningNode) AddInvoice(bolt11 string, preimage []byte, label string) *CreateInvoiceResult {
 	resp, err := n.rpc.CreateInvoice(n.harness.Ctx, &core_lightning.CreateinvoiceRequest{
 		Invstring: bolt11,
 		Preimage:  preimage,
+		Label:     label,
 	})
 	CheckError(n.harness.T, err)
 
@@ -337,6 +359,15 @@ func (n *CoreLightningNode) AddInvoice(bolt11 string, preimage []byte) *CreateIn
 		PaymentHash: resp.PaymentHash,
 		ExpiresAt:   resp.ExpiresAt,
 	}
+}
+
+func (n *CoreLightningNode) SignMessage(message []byte) []byte {
+	resp, err := n.rpc.SignMessage(n.harness.Ctx, &core_lightning.SignmessageRequest{
+		Message: hex.EncodeToString(message),
+	})
+	CheckError(n.harness.T, err)
+
+	return resp.Signature
 }
 
 type PayResult struct {

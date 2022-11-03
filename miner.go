@@ -23,7 +23,7 @@ type Miner struct {
 func NewMiner(h *TestHarness) *Miner {
 	btcUser := "btcuser"
 	btcPass := "btcpass"
-	bitcoindDir, err := ioutil.TempDir(h.dir, "miner-")
+	bitcoindDir, err := ioutil.TempDir(h.Dir, "miner-")
 	CheckError(h.T, err)
 
 	rpcPort, err := GetPort()

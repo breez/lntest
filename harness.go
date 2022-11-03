@@ -12,14 +12,14 @@ type TestHarness struct {
 	*testing.T
 	Ctx    context.Context
 	cancel context.CancelFunc
-	dir    string
+	Dir    string
 	mtx    sync.RWMutex
 	miners []*Miner
 	nodes  map[string]LightningNode
 }
 
 func NewTestHarness(t *testing.T) *TestHarness {
-	testDir, err := ioutil.TempDir("", "lntest-")
+	testDir, err := ioutil.TempDir("", "lt-")
 	CheckError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -27,7 +27,7 @@ func NewTestHarness(t *testing.T) *TestHarness {
 		T:      t,
 		Ctx:    ctx,
 		cancel: cancel,
-		dir:    testDir,
+		Dir:    testDir,
 		nodes:  make(map[string]LightningNode),
 	}
 }
@@ -57,5 +57,5 @@ func (h *TestHarness) TearDown() error {
 }
 
 func (h *TestHarness) cleanup() error {
-	return os.RemoveAll(h.dir)
+	return os.RemoveAll(h.Dir)
 }
