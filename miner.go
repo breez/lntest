@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 
@@ -77,6 +78,8 @@ func NewMiner(h *TestHarness) *Miner {
 	}
 
 	h.AddStoppable(miner)
+	h.AddCleanable(miner)
+	h.AddLogfile(filepath.Join(bitcoindDir, "regtest", "debug.log"))
 	return miner
 }
 
@@ -105,18 +108,6 @@ func (m *Miner) GetBlockHeight() uint32 {
 }
 
 func (m *Miner) TearDown() error {
-	if err := m.stop(); err != nil {
-		return err
-	}
-
-	if err := m.cleanup(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (m *Miner) stop() error {
 	if m.cmd == nil || m.cmd.Process == nil {
 		// return if not properly initialized
 		// or error starting the process
@@ -131,6 +122,6 @@ func (m *Miner) stop() error {
 	return m.cmd.Process.Signal(os.Interrupt)
 }
 
-func (m *Miner) cleanup() error {
+func (m *Miner) Cleanup() error {
 	return os.RemoveAll(m.dir)
 }

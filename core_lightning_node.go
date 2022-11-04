@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/breez/lntest/core_lightning"
-	"go.uber.org/multierr"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -155,6 +154,8 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, extraArgs ...st
 	}
 
 	h.AddStoppable(node)
+	h.AddCleanable(node)
+	h.AddLogfile(filepath.Join(regtestDir, "log"))
 
 	return node
 }
@@ -392,11 +393,6 @@ func (n *CoreLightningNode) WaitPaymentComplete(paymentHash []byte) {
 }
 
 func (n *CoreLightningNode) TearDown() error {
-	err := n.stop()
-	return multierr.Combine(err, n.cleanup())
-}
-
-func (n *CoreLightningNode) stop() error {
 	if n.cmd == nil || n.cmd.Process == nil {
 		// return if not properly initialized
 		// or error starting the process
@@ -411,6 +407,6 @@ func (n *CoreLightningNode) stop() error {
 	return n.cmd.Process.Signal(os.Interrupt)
 }
 
-func (n *CoreLightningNode) cleanup() error {
+func (n *CoreLightningNode) Cleanup() error {
 	return os.RemoveAll(n.dir)
 }
