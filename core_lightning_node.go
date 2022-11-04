@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/breez/lntest/core_lightning"
+	"go.uber.org/multierr"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -153,9 +154,7 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, extraArgs ...st
 		grpcPort: &grpcPort,
 	}
 
-	h.mtx.Lock()
-	defer h.mtx.Unlock()
-	h.nodes[name] = node
+	h.AddStoppable(node)
 
 	return node
 }
@@ -393,15 +392,8 @@ func (n *CoreLightningNode) WaitPaymentComplete(paymentHash []byte) {
 }
 
 func (n *CoreLightningNode) TearDown() error {
-	if err := n.stop(); err != nil {
-		return err
-	}
-
-	if err := n.cleanup(); err != nil {
-		return err
-	}
-
-	return nil
+	err := n.stop()
+	return multierr.Combine(err, n.cleanup())
 }
 
 func (n *CoreLightningNode) stop() error {

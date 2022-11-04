@@ -3,19 +3,25 @@ package lntest
 import (
 	"context"
 	"io/ioutil"
+	"log"
 	"os"
 	"sync"
 	"testing"
+
+	"go.uber.org/multierr"
 )
 
 type TestHarness struct {
 	*testing.T
-	Ctx    context.Context
-	cancel context.CancelFunc
-	Dir    string
-	mtx    sync.RWMutex
-	miners []*Miner
-	nodes  map[string]LightningNode
+	Ctx        context.Context
+	cancel     context.CancelFunc
+	Dir        string
+	mtx        sync.RWMutex
+	stoppables []Stoppable
+}
+
+type Stoppable interface {
+	TearDown() error
 }
 
 func NewTestHarness(t *testing.T) *TestHarness {
@@ -28,32 +34,31 @@ func NewTestHarness(t *testing.T) *TestHarness {
 		Ctx:    ctx,
 		cancel: cancel,
 		Dir:    testDir,
-		nodes:  make(map[string]LightningNode),
 	}
+}
+
+func (h *TestHarness) AddStoppable(stoppable Stoppable) {
+	h.mtx.Lock()
+	defer h.mtx.Unlock()
+	h.stoppables = append(h.stoppables, stoppable)
 }
 
 func (h *TestHarness) TearDown() error {
 	h.mtx.Lock()
 	defer h.mtx.Unlock()
 
-	for _, node := range h.nodes {
-		if err := node.TearDown(); err != nil {
-			return err
-		}
+	var err error = nil
+	for _, stoppable := range h.stoppables {
+		err = multierr.Append(err, stoppable.TearDown())
 	}
 
-	for _, miner := range h.miners {
-		if err := miner.TearDown(); err != nil {
-			return err
-		}
-	}
-
-	if err := h.cleanup(); err != nil {
-		return err
-	}
+	err = multierr.Append(err, h.cleanup())
 
 	h.cancel()
-	return nil
+	if err != nil {
+		log.Printf("Harness teardown had errors: %+v", err)
+	}
+	return err
 }
 
 func (h *TestHarness) cleanup() error {

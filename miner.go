@@ -76,10 +76,7 @@ func NewMiner(h *TestHarness) *Miner {
 		rpcPort: rpcPort,
 	}
 
-	h.mtx.Lock()
-	defer h.mtx.Unlock()
-	h.miners = append(h.miners, miner)
-
+	h.AddStoppable(miner)
 	return miner
 }
 
