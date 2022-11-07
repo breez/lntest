@@ -38,9 +38,7 @@ type CoreLightningNode struct {
 }
 
 func NewCoreLightningNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *CoreLightningNode {
-	lightningdDir, err := ioutil.TempDir(h.Dir, fmt.Sprintf("ld-%s", name))
-	CheckError(h.T, err)
-
+	lightningdDir := h.GetDirectory(fmt.Sprintf("ld-%s", name))
 	host := "localhost"
 	port, err := GetPort()
 	CheckError(h.T, err)
@@ -154,8 +152,7 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, extraArgs ...st
 	}
 
 	h.AddStoppable(node)
-	h.AddCleanable(node)
-	h.AddLogfile(filepath.Join(regtestDir, "log"))
+	h.RegisterLogfile(filepath.Join(regtestDir, "log"), fmt.Sprintf("lightningd-%s", name))
 
 	return node
 }
@@ -405,8 +402,4 @@ func (n *CoreLightningNode) TearDown() error {
 	}
 
 	return n.cmd.Process.Signal(os.Interrupt)
-}
-
-func (n *CoreLightningNode) Cleanup() error {
-	return os.RemoveAll(n.dir)
 }

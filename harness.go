@@ -2,9 +2,12 @@ package lntest
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -15,14 +18,21 @@ import (
 
 type TestHarness struct {
 	*testing.T
-	Ctx        context.Context
-	cancel     context.CancelFunc
-	Dir        string
-	mtx        sync.RWMutex
-	stoppables []Stoppable
-	cleanables []Cleanable
-	logFiles   []string
-	dumpLogs   bool
+	Ctx           context.Context
+	cancel        context.CancelFunc
+	Dir           string
+	mtx           sync.RWMutex
+	stoppables    []Stoppable
+	cleanables    []Cleanable
+	logFiles      []*logFile
+	dumpLogs      bool
+	preserveLogs  bool
+	preserveState bool
+}
+
+type logFile struct {
+	path string
+	name string
 }
 
 type Stoppable interface {
@@ -36,21 +46,38 @@ type Cleanable interface {
 type HarnessOption int
 
 const (
-	DumpLogs HarnessOption = 0
+	DumpLogs      HarnessOption = 0
+	PreserveLogs  HarnessOption = 1
+	PreserveState HarnessOption = 2
 )
 
 func NewTestHarness(t *testing.T, options ...HarnessOption) *TestHarness {
-	testDir, err := ioutil.TempDir("", "lt-")
+	rootDir, err := GetTestRootDir()
 	CheckError(t, err)
 
+	testDir, err := ioutil.TempDir(*rootDir, "")
+	CheckError(t, err)
+
+	log.Printf("Testing directory for this harness: '%s'", testDir)
 	ctx, cancel := context.WithCancel(context.Background())
-	return &TestHarness{
-		T:        t,
-		Ctx:      ctx,
-		cancel:   cancel,
-		Dir:      testDir,
-		dumpLogs: slices.Contains(options, DumpLogs),
+	h := &TestHarness{
+		T:             t,
+		Ctx:           ctx,
+		cancel:        cancel,
+		Dir:           testDir,
+		dumpLogs:      slices.Contains(options, DumpLogs),
+		preserveLogs:  slices.Contains(options, PreserveLogs) || GetPreserveLogs(),
+		preserveState: slices.Contains(options, PreserveState) || GetPreserveState(),
 	}
+
+	return h
+}
+
+func (h *TestHarness) GetDirectory(pattern string) string {
+	dir, err := ioutil.TempDir(h.Dir, pattern)
+	CheckError(h.T, err)
+
+	return dir
 }
 
 func (h *TestHarness) AddStoppable(stoppable Stoppable) {
@@ -59,10 +86,10 @@ func (h *TestHarness) AddStoppable(stoppable Stoppable) {
 	h.stoppables = append(h.stoppables, stoppable)
 }
 
-func (h *TestHarness) AddLogfile(logfile string) {
+func (h *TestHarness) RegisterLogfile(path string, name string) {
 	h.mtx.Lock()
 	defer h.mtx.Unlock()
-	h.logFiles = append(h.logFiles, logfile)
+	h.logFiles = append(h.logFiles, &logFile{path: path, name: name})
 }
 
 func (h *TestHarness) AddCleanable(cleanable Cleanable) {
@@ -71,50 +98,120 @@ func (h *TestHarness) AddCleanable(cleanable Cleanable) {
 	h.cleanables = append(h.cleanables, cleanable)
 }
 
-func (h *TestHarness) TearDown() error {
+func (h *TestHarness) TearDown() {
 	h.mtx.Lock()
 	defer h.mtx.Unlock()
 
-	var err error = nil
 	for _, stoppable := range h.stoppables {
-		err = multierr.Append(err, stoppable.TearDown())
+		err := stoppable.TearDown()
+		if err != nil {
+			log.Printf("Failed to tear down artifact. Error: %v", err)
+		}
 	}
 
 	if h.dumpLogs {
 		for _, logFile := range h.logFiles {
 			var sb strings.Builder
 			sb.WriteString("*********************************************************\n")
-			sb.WriteString("Log dump for ")
-			sb.WriteString(logFile)
-			sb.WriteString("\n")
+			sb.WriteString(fmt.Sprintf("Log dump for %s, path %s\n", logFile.name, logFile.path))
 			sb.WriteString("*****************************************************************************\n")
-			content, err := os.ReadFile(logFile)
+			content, err := os.ReadFile(logFile.path)
 			if err == nil {
 				sb.Write(content)
 			}
 			sb.WriteString("\n")
 			sb.WriteString("*****************************************************************************\n")
-			sb.WriteString("End log dump for ")
-			sb.WriteString(logFile)
-			sb.WriteString("\n")
+			sb.WriteString(fmt.Sprintf("End log dump for %s, path %s\n", logFile.name, logFile.path))
 			sb.WriteString("*****************************************************************************\n")
 			log.Print(sb.String())
 		}
 	}
 
-	for _, cleanable := range h.cleanables {
-		err = multierr.Append(err, cleanable.Cleanup())
+	err := h.cleanup()
+	if err != nil {
+		log.Printf("Harness cleanup failed. Error: %v", err)
 	}
-
-	err = multierr.Append(err, h.cleanup())
 
 	h.cancel()
-	if err != nil {
-		log.Printf("Harness teardown had errors: %+v", err)
-	}
-	return err
 }
 
 func (h *TestHarness) cleanup() error {
-	return os.RemoveAll(h.Dir)
+	logsPath := filepath.Join(h.Dir, "logs")
+	err := os.MkdirAll(logsPath, os.ModePerm)
+	if err != nil {
+		log.Printf("Could not create preserve log directory %s. Error: %v", logsPath, err)
+	}
+
+	if h.preserveLogs {
+		for _, logFile := range h.logFiles {
+			src, err := os.Open(logFile.path)
+			if err != nil {
+				continue
+			}
+			logFileName := logFile.name
+			if !strings.HasSuffix(logFileName, ".log") {
+				logFileName += ".log"
+			}
+
+			dst, err := os.Create(filepath.Join(logsPath, logFileName))
+			if err != nil {
+				log.Printf("Could not preserve log %s with name %s, error: %v", logFile.path, logFileName, err)
+				continue
+			}
+
+			_, err = io.Copy(dst, src)
+			if err != nil {
+				log.Printf("Could not preserve log %s with name %s, error: %v", logFile.path, logFileName, err)
+			}
+		}
+
+		log.Printf("Preserved logs in directory '%s'", logsPath)
+	}
+
+	if !h.preserveState {
+		var tempDir string
+		// Save the logs from being deleted.
+		if h.preserveLogs {
+			t, err := ioutil.TempDir("", "")
+			if err != nil {
+				log.Printf("Could not preserve logs, failed to create temporary dir.")
+			} else {
+				tempDir = t
+				defer os.RemoveAll(tempDir)
+				err = os.Rename(logsPath, filepath.Join(tempDir, "logs"))
+				if err != nil {
+					log.Printf("Could not preserve logs, failed to move to temporary dir.")
+				}
+			}
+		}
+
+		var err error
+		for _, cleanable := range h.cleanables {
+			err = multierr.Append(err, cleanable.Cleanup())
+		}
+
+		if err != nil {
+			log.Printf("Harness cleanup had errors: %+v", err)
+		}
+
+		err = os.RemoveAll(h.Dir)
+		if err != nil {
+			log.Printf("Failed to clean testing directory '%s'", h.Dir)
+		}
+
+		if h.preserveLogs {
+			// Move back the preserved logs.
+			err = os.Mkdir(h.Dir, os.ModePerm)
+			if err != nil {
+				log.Printf("Failed to recreate testing directory '%s' to preserve logs.", h.Dir)
+			}
+
+			err = os.Rename(filepath.Join(tempDir, "logs"), logsPath)
+			if err != nil {
+				log.Printf("Failed to preserve logs. Could not put back the logs directory.")
+			}
+		}
+	}
+
+	return err
 }

@@ -4,7 +4,6 @@ go 1.18
 
 require (
 	github.com/niftynei/glightning v0.8.2
-	github.com/tv42/zbase32 v0.0.0-20220222190657-f76a9fc892fa
 	golang.org/x/exp v0.0.0-20221012211006-4de253d81b95
 	google.golang.org/grpc v1.50.1
 	google.golang.org/protobuf v1.27.1

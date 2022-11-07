@@ -2,7 +2,6 @@ package lntest
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -24,9 +23,7 @@ type Miner struct {
 func NewMiner(h *TestHarness) *Miner {
 	btcUser := "btcuser"
 	btcPass := "btcpass"
-	bitcoindDir, err := ioutil.TempDir(h.Dir, "miner-")
-	CheckError(h.T, err)
-
+	bitcoindDir := h.GetDirectory("miner")
 	rpcPort, err := GetPort()
 	CheckError(h.T, err)
 
@@ -78,8 +75,7 @@ func NewMiner(h *TestHarness) *Miner {
 	}
 
 	h.AddStoppable(miner)
-	h.AddCleanable(miner)
-	h.AddLogfile(filepath.Join(bitcoindDir, "regtest", "debug.log"))
+	h.RegisterLogfile(filepath.Join(bitcoindDir, "regtest", "debug.log"), filepath.Base(bitcoindDir))
 	return miner
 }
 
@@ -120,8 +116,4 @@ func (m *Miner) TearDown() error {
 	}
 
 	return m.cmd.Process.Signal(os.Interrupt)
-}
-
-func (m *Miner) Cleanup() error {
-	return os.RemoveAll(m.dir)
 }
