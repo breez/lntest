@@ -369,6 +369,7 @@ func (n *CoreLightningNode) SignMessage(message []byte) []byte {
 
 type PayResult struct {
 	PaymentHash []byte
+	Parts       uint32
 }
 
 func (n *CoreLightningNode) Pay(bolt11 string) *PayResult {
@@ -379,14 +380,83 @@ func (n *CoreLightningNode) Pay(bolt11 string) *PayResult {
 
 	return &PayResult{
 		PaymentHash: resp.PaymentHash,
+		Parts:       resp.Parts,
 	}
 }
 
-func (n *CoreLightningNode) WaitPaymentComplete(paymentHash []byte) {
-	_, err := n.rpc.WaitSendPay(n.harness.Ctx, &core_lightning.WaitsendpayRequest{
+type WaitPaymentCompleteResponse struct {
+	PaymentHash     []byte
+	AmountMsat      uint64
+	Destination     []byte
+	CreatedAt       uint64
+	AmountSentMsat  uint64
+	PaymentPreimage []byte
+}
+
+func (n *CoreLightningNode) WaitPaymentComplete(paymentHash []byte, parts uint32) *WaitPaymentCompleteResponse {
+	partid := uint64(parts)
+	resp, err := n.rpc.WaitSendPay(n.harness.Ctx, &core_lightning.WaitsendpayRequest{
+		PaymentHash: paymentHash,
+		Partid:      &partid,
+	})
+	CheckError(n.harness.T, err)
+
+	return &WaitPaymentCompleteResponse{
+		PaymentHash:     resp.PaymentHash,
+		AmountMsat:      resp.AmountMsat.Msat,
+		Destination:     resp.Destination,
+		CreatedAt:       resp.CreatedAt,
+		AmountSentMsat:  resp.AmountMsat.Msat,
+		PaymentPreimage: resp.PaymentPreimage,
+	}
+}
+
+type InvoiceStatus int32
+
+const (
+	Invoice_UNPAID  InvoiceStatus = 0
+	Invoice_PAID    InvoiceStatus = 1
+	Invoice_EXPIRED InvoiceStatus = 2
+)
+
+type GetInvoiceResponse struct {
+	Exists             bool
+	AmountMsat         uint64
+	AmountReceivedMsat uint64
+	Bolt11             *string
+	Description        *string
+	ExpiresAt          uint64
+	PaidAt             *uint64
+	PayerNote          *string
+	PaymentHash        []byte
+	PaymentPreimage    []byte
+	Status             InvoiceStatus
+}
+
+func (n *CoreLightningNode) GetInvoice(paymentHash []byte) *GetInvoiceResponse {
+	resp, err := n.rpc.ListInvoices(n.harness.Ctx, &core_lightning.ListinvoicesRequest{
 		PaymentHash: paymentHash,
 	})
 	CheckError(n.harness.T, err)
+	if resp.Invoices == nil || len(resp.Invoices) == 0 {
+		return &GetInvoiceResponse{
+			Exists: false,
+		}
+	}
+	invoice := resp.Invoices[0]
+	return &GetInvoiceResponse{
+		Exists:             true,
+		AmountMsat:         invoice.AmountMsat.Msat,
+		AmountReceivedMsat: invoice.AmountReceivedMsat.Msat,
+		Bolt11:             invoice.Bolt11,
+		Description:        invoice.Description,
+		ExpiresAt:          invoice.ExpiresAt,
+		PaidAt:             invoice.PaidAt,
+		PayerNote:          invoice.PayerNote,
+		PaymentHash:        invoice.PaymentHash,
+		PaymentPreimage:    invoice.PaymentPreimage,
+		Status:             InvoiceStatus(invoice.Status),
+	}
 }
 
 func (n *CoreLightningNode) TearDown() error {
