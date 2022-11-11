@@ -37,7 +37,7 @@ type CoreLightningNode struct {
 	grpcPort *uint32
 }
 
-func NewCoreLightningNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *CoreLightningNode {
+func NewCoreLightningNode(h *TestHarness, m *Miner, name string, timeout time.Time, extraArgs ...string) *CoreLightningNode {
 	lightningdDir := h.GetDirectory(fmt.Sprintf("ld-%s", name))
 	host := "localhost"
 	port, err := GetPort()
@@ -82,7 +82,6 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, extraArgs ...st
 
 	go func() {
 		// print any stderr output to the test log
-		log.Printf("Starting stderr scanner")
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			log.Println(name + ": " + scanner.Text())
@@ -91,7 +90,6 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, extraArgs ...st
 
 	go func() {
 		// print any stderr output to the test log
-		log.Printf("Starting stdout scanner")
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			log.Println(name + ": " + scanner.Text())
@@ -107,7 +105,7 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, extraArgs ...st
 	}()
 
 	regtestDir := filepath.Join(lightningdDir, "regtest")
-	waitForLog(h.T, filepath.Join(regtestDir, "log"), "Server started with public key", 30)
+	waitForLog(h.T, filepath.Join(regtestDir, "log"), "Server started with public key", timeout)
 
 	pemServerCA, err := ioutil.ReadFile(filepath.Join(regtestDir, "ca.pem"))
 	CheckError(h.T, err)
@@ -157,13 +155,11 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, extraArgs ...st
 	return node
 }
 
-func waitForLog(t *testing.T, logfilePath string, phrase string, timeoutSec int) {
-	timeout := time.Now().Add(time.Duration(timeoutSec) * time.Second)
-
+func waitForLog(t *testing.T, logfilePath string, phrase string, timeout time.Time) {
 	// at startup we need to wait for the file to open
-	for time.Now().Before(timeout) || timeoutSec == 0 {
+	for time.Now().Before(timeout) {
 		if _, err := os.Stat(logfilePath); os.IsNotExist(err) {
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(waitSleepInterval)
 			continue
 		}
 		break
@@ -172,11 +168,11 @@ func waitForLog(t *testing.T, logfilePath string, phrase string, timeoutSec int)
 	defer logfile.Close()
 
 	reader := bufio.NewReader(logfile)
-	for timeoutSec == 0 || time.Now().Before(timeout) {
+	for time.Now().Before(timeout) {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(waitSleepInterval)
 			} else {
 				CheckError(t, err)
 			}
@@ -207,7 +203,7 @@ func (n *CoreLightningNode) PrivateKey() []byte {
 	return n.nodeId
 }
 
-func (n *CoreLightningNode) WaitForSync() {
+func (n *CoreLightningNode) WaitForSync(timeout time.Time) {
 	for {
 		info, _ := n.rpc.Getinfo(n.harness.Ctx, &core_lightning.GetinfoRequest{})
 
@@ -225,11 +221,16 @@ func (n *CoreLightningNode) WaitForSync() {
 			blockHeight,
 			info.Blockheight,
 		)
-		time.Sleep(100 * time.Millisecond)
+
+		if time.Now().After(timeout) {
+			n.harness.T.Fatal("timed out waiting for channel normal")
+		}
+
+		time.Sleep(waitSleepInterval)
 	}
 }
 
-func (n *CoreLightningNode) Fund(amountSat uint64) {
+func (n *CoreLightningNode) Fund(amountSat uint64, timeout time.Time) {
 	addrResponse, err := n.rpc.NewAddr(
 		context.Background(),
 		&core_lightning.NewaddrRequest{
@@ -239,6 +240,7 @@ func (n *CoreLightningNode) Fund(amountSat uint64) {
 	CheckError(n.harness.T, err)
 
 	n.miner.SendToAddress(*addrResponse.Bech32, amountSat)
+	n.WaitForSync(timeout)
 }
 
 type OpenChannelOptions struct {
@@ -246,11 +248,11 @@ type OpenChannelOptions struct {
 	FeePerKw  uint
 }
 
-func (n *CoreLightningNode) ConnectPeer(nodeId []byte, host *string, port *uint32) {
+func (n *CoreLightningNode) ConnectPeer(peer LightningNode) {
 	_, err := n.rpc.ConnectPeer(n.harness.Ctx, &core_lightning.ConnectRequest{
-		Id:   hex.EncodeToString(nodeId),
-		Host: host,
-		Port: port,
+		Id:   hex.EncodeToString(peer.NodeId()),
+		Host: peer.Host(),
+		Port: peer.Port(),
 	})
 	CheckError(n.harness.T, err)
 }
@@ -259,7 +261,7 @@ func (n *CoreLightningNode) OpenChannel(peer *CoreLightningNode, options *OpenCh
 	peerInfo, err := peer.rpc.Getinfo(n.harness.Ctx, &core_lightning.GetinfoRequest{})
 	CheckError(n.harness.T, err)
 
-	n.ConnectPeer(peerInfo.Id, peer.host, peer.port)
+	n.ConnectPeer(peer)
 
 	feePerKw := options.FeePerKw
 	if feePerKw == 0 {
@@ -293,6 +295,16 @@ func (n *CoreLightningNode) OpenChannel(peer *CoreLightningNode, options *OpenCh
 		FundingTxId: string(fundResult.Txid),
 		ChannelId:   string(fundResult.ChannelId),
 	}
+}
+
+func (n *CoreLightningNode) OpenChannelAndWait(
+	peer *CoreLightningNode,
+	options *OpenChannelOptions,
+	timeout time.Time) *ChannelInfo {
+	channel := n.OpenChannel(peer, options)
+	n.miner.MineBlocks(6)
+	channel.WaitForChannelReady(timeout)
+	return channel
 }
 
 type CreateInvoiceOptions struct {
@@ -368,20 +380,179 @@ func (n *CoreLightningNode) SignMessage(message []byte) []byte {
 }
 
 type PayResult struct {
-	PaymentHash []byte
-	Parts       uint32
+	PaymentHash     []byte
+	Parts           uint32
+	AmountMsat      uint64
+	Destination     []byte
+	CreatedAt       uint64
+	AmountSentMsat  uint64
+	PaymentPreimage []byte
 }
 
-func (n *CoreLightningNode) Pay(bolt11 string) *PayResult {
+func (n *CoreLightningNode) Pay(bolt11 string, timeout time.Time) *PayResult {
+	rpcTimeout := getTimeoutSeconds(n.harness.T, timeout)
 	resp, err := n.rpc.Pay(n.harness.Ctx, &core_lightning.PayRequest{
-		Bolt11: bolt11,
+		Bolt11:   bolt11,
+		RetryFor: &rpcTimeout,
 	})
 	CheckError(n.harness.T, err)
 
 	return &PayResult{
-		PaymentHash: resp.PaymentHash,
-		Parts:       resp.Parts,
+		PaymentHash:     resp.PaymentHash,
+		Parts:           resp.Parts,
+		AmountMsat:      resp.AmountMsat.Msat,
+		Destination:     resp.Destination,
+		CreatedAt:       uint64(resp.CreatedAt),
+		AmountSentMsat:  resp.AmountSentMsat.Msat,
+		PaymentPreimage: resp.PaymentPreimage,
 	}
+}
+
+type Route struct {
+	Route []*Hop
+}
+
+type Hop struct {
+	Id         []byte
+	Channel    string
+	AmountMsat uint64
+	Delay      uint16
+}
+
+func (n *CoreLightningNode) GetRoute(destination []byte, amountMsat uint64) *Route {
+	route, err := n.rpc.GetRoute(n.harness.Ctx, &core_lightning.GetrouteRequest{
+		Id: destination,
+		AmountMsat: &core_lightning.Amount{
+			Msat: amountMsat,
+		},
+		Riskfactor: 0,
+	})
+	CheckError(n.harness.T, err)
+
+	result := &Route{}
+	for _, hop := range route.Route {
+		result.Route = append(result.Route, &Hop{
+			Id:         hop.Id,
+			Channel:    hop.Channel,
+			AmountMsat: hop.AmountMsat.Msat,
+			Delay:      uint16(hop.Delay),
+		})
+	}
+	return result
+}
+
+type PayViaRouteResponse struct {
+	PartId uint32
+}
+
+func (n *CoreLightningNode) StartPayViaRoute(amountMsat uint64, paymentHash []byte, route *Route) *PayViaRouteResponse {
+	var sendPayRoute []*core_lightning.SendpayRoute
+	for _, hop := range route.Route {
+		sendPayRoute = append(sendPayRoute, &core_lightning.SendpayRoute{
+			AmountMsat: &core_lightning.Amount{
+				Msat: hop.AmountMsat,
+			},
+			Id:      hop.Id,
+			Delay:   uint32(hop.Delay),
+			Channel: hop.Channel,
+		})
+	}
+
+	resp, err := n.rpc.SendPay(n.harness.Ctx, &core_lightning.SendpayRequest{
+		Route:       sendPayRoute,
+		PaymentHash: paymentHash,
+		AmountMsat: &core_lightning.Amount{
+			Msat: amountMsat,
+		},
+	})
+	CheckError(n.harness.T, err)
+
+	return &PayViaRouteResponse{
+		PartId: uint32(*resp.Partid),
+	}
+}
+
+func (n *CoreLightningNode) PayViaRouteAndWait(
+	amountMsat uint64,
+	paymentHash []byte,
+	route *Route,
+	timeout time.Time) *PayPartResult {
+	resp := n.StartPayViaRoute(amountMsat, paymentHash, route)
+	return n.WaitForPaymentPart(paymentHash, timeout, resp.PartId)
+}
+
+func (n *CoreLightningNode) StartPayPartViaRoute(
+	amountMsat uint64,
+	paymentHash []byte,
+	paymentSecret []byte,
+	partId uint32,
+	route *Route) {
+	var sendPayRoute []*core_lightning.SendpayRoute
+	for _, hop := range route.Route {
+		sendPayRoute = append(sendPayRoute, &core_lightning.SendpayRoute{
+			AmountMsat: &core_lightning.Amount{
+				Msat: hop.AmountMsat,
+			},
+			Id:      hop.Id,
+			Delay:   uint32(hop.Delay),
+			Channel: hop.Channel,
+		})
+	}
+
+	_, err := n.rpc.SendPay(n.harness.Ctx, &core_lightning.SendpayRequest{
+		Route:       sendPayRoute,
+		PaymentHash: paymentHash,
+		AmountMsat: &core_lightning.Amount{
+			Msat: amountMsat,
+		},
+		Partid:        &partId,
+		PaymentSecret: paymentSecret,
+	})
+	CheckError(n.harness.T, err)
+}
+
+type PayPartResult struct {
+	PaymentHash     []byte
+	PartId          *uint32
+	AmountMsat      uint64
+	Destination     []byte
+	CreatedAt       uint64
+	AmountSentMsat  uint64
+	PaymentPreimage []byte
+}
+
+func (n *CoreLightningNode) WaitForPaymentPart(paymentHash []byte, timeout time.Time, partId uint32) *PayPartResult {
+	rpcTimeout := getTimeoutSeconds(n.harness.T, timeout)
+	rpcPartId := uint64(partId)
+	resp, err := n.rpc.WaitSendPay(n.harness.Ctx, &core_lightning.WaitsendpayRequest{
+		PaymentHash: paymentHash,
+		Timeout:     &rpcTimeout,
+		Partid:      &rpcPartId,
+	})
+	CheckError(n.harness.T, err)
+	var partid uint32
+	if resp.Partid != nil {
+		partid = uint32(*resp.Partid)
+	}
+	return &PayPartResult{
+		PaymentHash:     resp.PaymentHash,
+		PartId:          &partid,
+		AmountMsat:      resp.AmountMsat.Msat,
+		Destination:     resp.Destination,
+		CreatedAt:       resp.CreatedAt,
+		AmountSentMsat:  resp.AmountSentMsat.Msat,
+		PaymentPreimage: resp.PaymentPreimage,
+	}
+}
+
+func (n *CoreLightningNode) WaitForPaymentParts(paymentHash []byte, timeout time.Time, partIds ...uint32) []*PayPartResult {
+	var result []*PayPartResult
+	for _, partId := range partIds {
+		part := n.WaitForPaymentPart(paymentHash, timeout, partId)
+		result = append(result, part)
+	}
+
+	return result
 }
 
 type WaitPaymentCompleteResponse struct {
@@ -472,4 +643,13 @@ func (n *CoreLightningNode) TearDown() error {
 	}
 
 	return n.cmd.Process.Signal(os.Interrupt)
+}
+
+func getTimeoutSeconds(t *testing.T, timeout time.Time) uint32 {
+	timeoutSeconds := time.Until(timeout).Seconds()
+	if timeoutSeconds < 0 {
+		CheckError(t, fmt.Errorf("timeout expired"))
+	}
+
+	return uint32(timeoutSeconds)
 }

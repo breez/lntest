@@ -7,8 +7,6 @@ import (
 	"golang.org/x/exp/slices"
 )
 
-const defaultTimeout int = 10
-
 type ChannelInfo struct {
 	From        *CoreLightningNode
 	To          *CoreLightningNode
@@ -17,8 +15,7 @@ type ChannelInfo struct {
 	ChannelId   string
 }
 
-func (c *ChannelInfo) WaitForChannelReady() {
-	timeout := time.Now().Add(time.Duration(defaultTimeout) * time.Second)
+func (c *ChannelInfo) WaitForChannelReady(timeout time.Time) {
 	for {
 		info, err := c.To.rpc.Getinfo(c.From.harness.Ctx, &core_lightning.GetinfoRequest{})
 		CheckError(c.To.harness.T, err)
@@ -55,6 +52,7 @@ func (c *ChannelInfo) WaitForChannelReady() {
 				// Wait for the channel to end up in the listchannels response.
 				if len(channelsResp.Channels) > 0 &&
 					channelsResp.Channels[0].Active {
+					c.ChannelId = channelsResp.Channels[0].ShortChannelId
 					return
 				}
 			}
@@ -64,6 +62,6 @@ func (c *ChannelInfo) WaitForChannelReady() {
 			c.From.harness.T.Fatal("timed out waiting for channel normal")
 		}
 
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(waitSleepInterval)
 	}
 }

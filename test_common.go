@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"runtime/debug"
 	"testing"
+	"time"
 )
 
 var (
@@ -31,6 +32,8 @@ var (
 		"preservestate", false, "value indicating whether all artifact state should be preserved",
 	)
 )
+
+var waitSleepInterval = time.Millisecond * 50
 
 func CheckError(t *testing.T, err error) {
 	if err != nil {
