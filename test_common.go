@@ -3,7 +3,6 @@ package lntest
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
@@ -65,7 +64,7 @@ func GetTestRootDir() (*string, error) {
 	}
 
 	if dir == nil || *dir == "" {
-		tempDir, err := ioutil.TempDir("", "lntest")
+		tempDir, err := os.MkdirTemp("", "lntest")
 		return &tempDir, err
 	}
 

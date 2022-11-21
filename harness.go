@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -55,7 +54,7 @@ func NewTestHarness(t *testing.T, options ...HarnessOption) *TestHarness {
 	rootDir, err := GetTestRootDir()
 	CheckError(t, err)
 
-	testDir, err := ioutil.TempDir(*rootDir, "")
+	testDir, err := os.MkdirTemp(*rootDir, "")
 	CheckError(t, err)
 
 	log.Printf("Testing directory for this harness: '%s'", testDir)
@@ -74,7 +73,7 @@ func NewTestHarness(t *testing.T, options ...HarnessOption) *TestHarness {
 }
 
 func (h *TestHarness) GetDirectory(pattern string) string {
-	dir, err := ioutil.TempDir(h.Dir, pattern)
+	dir, err := os.MkdirTemp(h.Dir, pattern)
 	CheckError(h.T, err)
 
 	return dir
@@ -172,7 +171,7 @@ func (h *TestHarness) cleanup() error {
 		var tempDir string
 		// Save the logs from being deleted.
 		if h.preserveLogs {
-			t, err := ioutil.TempDir("", "")
+			t, err := os.MkdirTemp("", "")
 			if err != nil {
 				log.Printf("Could not preserve logs, failed to create temporary dir.")
 			} else {
