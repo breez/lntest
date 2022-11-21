@@ -99,8 +99,9 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, timeout time.Ti
 		err := cmd.Wait()
 		if err != nil && err.Error() != "signal: interrupt" {
 			log.Printf(name+": "+"lightningd exited with error %s", err)
+		} else {
+			log.Printf(name + ": " + "process exited normally")
 		}
-		log.Printf(name + ": " + "process exited normally")
 	}()
 
 	regtestDir := filepath.Join(lightningdDir, "regtest")
@@ -636,7 +637,6 @@ func (n *CoreLightningNode) TearDown() error {
 		return nil
 	}
 
-	defer n.cmd.Wait()
 	if runtime.GOOS == "windows" {
 		return n.cmd.Process.Signal(os.Kill)
 	}
