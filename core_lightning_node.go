@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -107,7 +106,7 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, timeout time.Ti
 	regtestDir := filepath.Join(lightningdDir, "regtest")
 	waitForLog(h.T, filepath.Join(regtestDir, "log"), "Server started with public key", timeout)
 
-	pemServerCA, err := ioutil.ReadFile(filepath.Join(regtestDir, "ca.pem"))
+	pemServerCA, err := os.ReadFile(filepath.Join(regtestDir, "ca.pem"))
 	CheckError(h.T, err)
 
 	certPool := x509.NewCertPool()
