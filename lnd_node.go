@@ -230,11 +230,11 @@ func (n *LndNode) OpenChannel(peer LightningNode, options *OpenChannelOptions) *
 func (n *LndNode) OpenChannelAndWait(
 	peer LightningNode,
 	options *OpenChannelOptions,
-	timeout time.Time) *ChannelInfo {
+	timeout time.Time) (*ChannelInfo, ShortChannelID) {
 	channel := n.OpenChannel(peer, options)
 	n.miner.MineBlocks(6)
-	channel.WaitForChannelReady(timeout)
-	return channel
+	cid := channel.WaitForChannelReady(timeout)
+	return channel, cid
 }
 
 func (n *LndNode) WaitForChannelReady(channel *ChannelInfo, timeout time.Time) ShortChannelID {
@@ -354,7 +354,7 @@ func (n *LndNode) GetRoute(destination []byte, amountMsat uint64) *Route {
 	return result
 }
 
-func (n *LndNode) PayViaRoute(amountMsat uint64, paymentHash []byte, route *Route, timeout time.Time) *PayResult {
+func (n *LndNode) PayViaRoute(amountMsat uint64, paymentHash []byte, paymentSecret []byte, route *Route, timeout time.Time) *PayResult {
 	r := &lnd.Route{}
 
 	for _, hop := range route.Hops {
@@ -364,6 +364,12 @@ func (n *LndNode) PayViaRoute(amountMsat uint64, paymentHash []byte, route *Rout
 			PubKey:           hex.EncodeToString(hop.Id),
 			AmtToForwardMsat: int64(hop.AmountMsat),
 		})
+	}
+
+	lh := r.Hops[len(r.Hops)-1]
+	lh.MppRecord = &lnd.MPPRecord{
+		TotalAmtMsat: int64(amountMsat),
+		PaymentAddr:  paymentSecret,
 	}
 
 	resp, err := n.rpc.SendToRouteSync(n.harness.Ctx, &lnd.SendToRouteRequest{

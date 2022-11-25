@@ -21,7 +21,7 @@ type LightningNode interface {
 	OpenChannelAndWait(
 		peer LightningNode,
 		options *OpenChannelOptions,
-		timeout time.Time) *ChannelInfo
+		timeout time.Time) (*ChannelInfo, ShortChannelID)
 	WaitForChannelReady(channel *ChannelInfo, timeout time.Time) ShortChannelID
 	CreateBolt11Invoice(options *CreateInvoiceOptions) *CreateInvoiceResult
 	SignMessage(message []byte) []byte
@@ -30,6 +30,7 @@ type LightningNode interface {
 	PayViaRoute(
 		amountMsat uint64,
 		paymentHash []byte,
+		paymentSecret []byte,
 		route *Route,
 		timeout time.Time) *PayResult
 	GetInvoice(paymentHash []byte) *GetInvoiceResponse

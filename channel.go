@@ -12,9 +12,9 @@ type ChannelInfo struct {
 	FundingTxOutnum uint32
 }
 
-func (c *ChannelInfo) WaitForChannelReady(timeout time.Time) {
+func (c *ChannelInfo) WaitForChannelReady(timeout time.Time) ShortChannelID {
 	c.From.WaitForChannelReady(c, timeout)
-	c.To.WaitForChannelReady(c, timeout)
+	return c.To.WaitForChannelReady(c, timeout)
 }
 
 func (c *ChannelInfo) GetPeer(this LightningNode) LightningNode {

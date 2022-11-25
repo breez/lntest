@@ -285,11 +285,11 @@ func (n *CoreLightningNode) OpenChannel(peer LightningNode, options *OpenChannel
 func (n *CoreLightningNode) OpenChannelAndWait(
 	peer LightningNode,
 	options *OpenChannelOptions,
-	timeout time.Time) *ChannelInfo {
+	timeout time.Time) (*ChannelInfo, ShortChannelID) {
 	channel := n.OpenChannel(peer, options)
 	n.miner.MineBlocks(6)
-	channel.WaitForChannelReady(timeout)
-	return channel
+	cid := channel.WaitForChannelReady(timeout)
+	return channel, cid
 }
 
 func (n *CoreLightningNode) WaitForChannelReady(channel *ChannelInfo, timeout time.Time) ShortChannelID {
@@ -314,7 +314,7 @@ func (n *CoreLightningNode) WaitForChannelReady(channel *ChannelInfo, timeout ti
 			peer.Channels,
 			func(pc *cln.ListpeersPeersChannels) bool {
 				return bytes.Equal(pc.FundingTxid, channel.FundingTxId) &&
-					pc.FundingOutnum == &channel.FundingTxOutnum
+					*pc.FundingOutnum == channel.FundingTxOutnum
 			},
 		)
 
@@ -419,7 +419,7 @@ func (n *CoreLightningNode) GetRoute(destination []byte, amountMsat uint64) *Rou
 	return result
 }
 
-func (n *CoreLightningNode) startPayViaRoute(amountMsat uint64, paymentHash []byte, route *Route) *PayViaRouteResponse {
+func (n *CoreLightningNode) startPayViaRoute(amountMsat uint64, paymentHash []byte, paymentSecret []byte, route *Route) *cln.SendpayResponse {
 	var sendPayRoute []*cln.SendpayRoute
 	for _, hop := range route.Hops {
 		sendPayRoute = append(sendPayRoute, &cln.SendpayRoute{
@@ -438,69 +438,35 @@ func (n *CoreLightningNode) startPayViaRoute(amountMsat uint64, paymentHash []by
 		AmountMsat: &cln.Amount{
 			Msat: amountMsat,
 		},
+		PaymentSecret: paymentSecret,
 	})
 	CheckError(n.harness.T, err)
 
-	return &PayViaRouteResponse{
-		PartId: uint32(*resp.Partid),
-	}
+	return resp
 }
 
 func (n *CoreLightningNode) PayViaRoute(
 	amountMsat uint64,
 	paymentHash []byte,
+	paymentSecret []byte,
 	route *Route,
 	timeout time.Time) *PayResult {
-	resp := n.startPayViaRoute(amountMsat, paymentHash, route)
-	return n.waitForPaymentPart(paymentHash, timeout, resp.PartId)
-}
-
-func (n *CoreLightningNode) StartPayPartViaRoute(
-	amountMsat uint64,
-	paymentHash []byte,
-	paymentSecret []byte,
-	partId uint32,
-	route *Route) {
-	var sendPayRoute []*cln.SendpayRoute
-	for _, hop := range route.Hops {
-		sendPayRoute = append(sendPayRoute, &cln.SendpayRoute{
-			AmountMsat: &cln.Amount{
-				Msat: hop.AmountMsat,
-			},
-			Id:      hop.Id,
-			Delay:   uint32(hop.Delay),
-			Channel: hop.Channel.String(),
-		})
-	}
-
-	_, err := n.rpc.SendPay(n.harness.Ctx, &cln.SendpayRequest{
-		Route:       sendPayRoute,
-		PaymentHash: paymentHash,
-		AmountMsat: &cln.Amount{
-			Msat: amountMsat,
-		},
-		Partid:        &partId,
-		PaymentSecret: paymentSecret,
-	})
-	CheckError(n.harness.T, err)
-}
-
-func (n *CoreLightningNode) waitForPaymentPart(paymentHash []byte, timeout time.Time, partId uint32) *PayResult {
-	rpcTimeout := getTimeoutSeconds(n.harness.T, timeout)
-	rpcPartId := uint64(partId)
-	resp, err := n.rpc.WaitSendPay(n.harness.Ctx, &cln.WaitsendpayRequest{
-		PaymentHash: paymentHash,
-		Timeout:     &rpcTimeout,
-		Partid:      &rpcPartId,
+	resp := n.startPayViaRoute(amountMsat, paymentHash, paymentSecret, route)
+	t := getTimeoutSeconds(n.harness.T, timeout)
+	w, err := n.rpc.WaitSendPay(n.harness.Ctx, &cln.WaitsendpayRequest{
+		PaymentHash: resp.PaymentHash,
+		Timeout:     &t,
+		Partid:      resp.Partid,
+		Groupid:     resp.Groupid,
 	})
 	CheckError(n.harness.T, err)
 
 	return &PayResult{
-		PaymentHash:     resp.PaymentHash,
-		AmountMsat:      resp.AmountMsat.Msat,
-		Destination:     resp.Destination,
-		AmountSentMsat:  resp.AmountSentMsat.Msat,
-		PaymentPreimage: resp.PaymentPreimage,
+		PaymentHash:     w.PaymentHash,
+		AmountMsat:      w.AmountMsat.Msat,
+		Destination:     w.Destination,
+		AmountSentMsat:  w.AmountSentMsat.Msat,
+		PaymentPreimage: w.PaymentPreimage,
 	}
 }
 
