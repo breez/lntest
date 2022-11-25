@@ -21,6 +21,9 @@ var (
 	lightningdExecutable = flag.String(
 		"lightningdexec", "", "full path to lightningd binary",
 	)
+	lndExecutable = flag.String(
+		"lndexec", "", "full path to lnd binary",
+	)
 	testDir = flag.String(
 		"testdir", "", "full path to the root testing directory",
 	)
@@ -111,10 +114,27 @@ func GetLightningdBinary() (string, error) {
 	return exec.LookPath("lightningd")
 }
 
+func GetLndBinary() (string, error) {
+	if lndExecutable != nil {
+		return *lndExecutable, nil
+	}
+
+	return exec.LookPath("lnd")
+}
+
 func GetPreserveLogs() bool {
 	return *preserveLogs
 }
 
 func GetPreserveState() bool {
 	return *preserveState
+}
+
+func getTimeoutSeconds(t *testing.T, timeout time.Time) uint32 {
+	timeoutSeconds := time.Until(timeout).Seconds()
+	if timeoutSeconds < 0 {
+		CheckError(t, fmt.Errorf("timeout expired"))
+	}
+
+	return uint32(timeoutSeconds)
 }

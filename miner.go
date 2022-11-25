@@ -17,6 +17,8 @@ type Miner struct {
 	dir     string
 	rpc     *gbitcoin.Bitcoin
 	rpcPort uint32
+	rpcUser string
+	rpcPass string
 	cmd     *exec.Cmd
 }
 
@@ -72,6 +74,8 @@ func NewMiner(h *TestHarness) *Miner {
 		cmd:     cmd,
 		rpc:     rpc,
 		rpcPort: rpcPort,
+		rpcUser: btcUser,
+		rpcPass: btcPass,
 	}
 
 	h.AddStoppable(miner)

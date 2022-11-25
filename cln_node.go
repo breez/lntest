@@ -2,6 +2,7 @@ package lntest
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -17,7 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/breez/lntest/core_lightning"
+	"github.com/breez/lntest/cln"
+	"golang.org/x/exp/slices"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -29,11 +31,11 @@ type CoreLightningNode struct {
 	miner    *Miner
 	cmd      *exec.Cmd
 	dir      string
-	rpc      core_lightning.NodeClient
-	host     *string
-	port     *uint32
-	grpcHost *string
-	grpcPort *uint32
+	rpc      cln.NodeClient
+	host     string
+	port     uint32
+	grpcHost string
+	grpcPort uint32
 }
 
 func NewCoreLightningNode(h *TestHarness, m *Miner, name string, timeout time.Time, extraArgs ...string) *CoreLightningNode {
@@ -129,8 +131,8 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, timeout time.Ti
 	conn, err := grpc.Dial(grpcAddress, grpc.WithTransportCredentials(tlsCredentials))
 	CheckError(h.T, err)
 
-	client := core_lightning.NewNodeClient(conn)
-	info, err := client.Getinfo(h.Ctx, &core_lightning.GetinfoRequest{})
+	client := cln.NewNodeClient(conn)
+	info, err := client.Getinfo(h.Ctx, &cln.GetinfoRequest{})
 	CheckError(h.T, err)
 
 	log.Printf("%s: Has node id %x", name, info.Id)
@@ -143,10 +145,10 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, timeout time.Ti
 		cmd:      cmd,
 		dir:      lightningdDir,
 		rpc:      client,
-		port:     &port,
-		host:     &host,
-		grpcHost: &host,
-		grpcPort: &grpcPort,
+		port:     port,
+		host:     host,
+		grpcHost: host,
+		grpcPort: grpcPort,
 	}
 
 	h.AddStoppable(node)
@@ -191,11 +193,11 @@ func (n *CoreLightningNode) NodeId() []byte {
 	return n.nodeId
 }
 
-func (n *CoreLightningNode) Host() *string {
+func (n *CoreLightningNode) Host() string {
 	return n.host
 }
 
-func (n *CoreLightningNode) Port() *uint32 {
+func (n *CoreLightningNode) Port() uint32 {
 	return n.port
 }
 
@@ -205,7 +207,7 @@ func (n *CoreLightningNode) PrivateKey() []byte {
 
 func (n *CoreLightningNode) WaitForSync(timeout time.Time) {
 	for {
-		info, _ := n.rpc.Getinfo(n.harness.Ctx, &core_lightning.GetinfoRequest{})
+		info, _ := n.rpc.Getinfo(n.harness.Ctx, &cln.GetinfoRequest{})
 
 		blockHeight := n.miner.GetBlockHeight()
 
@@ -233,8 +235,8 @@ func (n *CoreLightningNode) WaitForSync(timeout time.Time) {
 func (n *CoreLightningNode) Fund(amountSat uint64, timeout time.Time) {
 	addrResponse, err := n.rpc.NewAddr(
 		context.Background(),
-		&core_lightning.NewaddrRequest{
-			Addresstype: core_lightning.NewaddrRequest_BECH32.Enum(),
+		&cln.NewaddrRequest{
+			Addresstype: cln.NewaddrRequest_BECH32.Enum(),
 		},
 	)
 	CheckError(n.harness.T, err)
@@ -243,45 +245,29 @@ func (n *CoreLightningNode) Fund(amountSat uint64, timeout time.Time) {
 	n.WaitForSync(timeout)
 }
 
-type OpenChannelOptions struct {
-	AmountSat uint64
-	FeePerKw  uint
-}
-
 func (n *CoreLightningNode) ConnectPeer(peer LightningNode) {
-	_, err := n.rpc.ConnectPeer(n.harness.Ctx, &core_lightning.ConnectRequest{
+	host := peer.Host()
+	port := peer.Port()
+	_, err := n.rpc.ConnectPeer(n.harness.Ctx, &cln.ConnectRequest{
 		Id:   hex.EncodeToString(peer.NodeId()),
-		Host: peer.Host(),
-		Port: peer.Port(),
+		Host: &host,
+		Port: &port,
 	})
 	CheckError(n.harness.T, err)
 }
 
-func (n *CoreLightningNode) OpenChannel(peer *CoreLightningNode, options *OpenChannelOptions) *ChannelInfo {
-	peerInfo, err := peer.rpc.Getinfo(n.harness.Ctx, &core_lightning.GetinfoRequest{})
-	CheckError(n.harness.T, err)
-
+func (n *CoreLightningNode) OpenChannel(peer LightningNode, options *OpenChannelOptions) *ChannelInfo {
 	n.ConnectPeer(peer)
-
-	feePerKw := options.FeePerKw
-	if feePerKw == 0 {
-		feePerKw = 253
-	}
 
 	// open a channel
 	announce := true
-	fundResult, err := n.rpc.FundChannel(n.harness.Ctx, &core_lightning.FundchannelRequest{
-		Id: peerInfo.Id,
-		Amount: &core_lightning.AmountOrAll{
-			Value: &core_lightning.AmountOrAll_Amount{
-				Amount: &core_lightning.Amount{
+	fundResult, err := n.rpc.FundChannel(n.harness.Ctx, &cln.FundchannelRequest{
+		Id: peer.NodeId(),
+		Amount: &cln.AmountOrAll{
+			Value: &cln.AmountOrAll_Amount{
+				Amount: &cln.Amount{
 					Msat: options.AmountSat * 1000,
 				},
-			},
-		},
-		Feerate: &core_lightning.Feerate{
-			Style: &core_lightning.Feerate_Perkw{
-				Perkw: uint32(feePerKw),
 			},
 		},
 		Announce: &announce,
@@ -289,16 +275,15 @@ func (n *CoreLightningNode) OpenChannel(peer *CoreLightningNode, options *OpenCh
 	CheckError(n.harness.T, err)
 
 	return &ChannelInfo{
-		From:        n,
-		To:          peer,
-		FundingTx:   string(fundResult.Tx),
-		FundingTxId: string(fundResult.Txid),
-		ChannelId:   string(fundResult.ChannelId),
+		From:            n,
+		To:              peer,
+		FundingTxId:     fundResult.Txid,
+		FundingTxOutnum: fundResult.Outnum,
 	}
 }
 
 func (n *CoreLightningNode) OpenChannelAndWait(
-	peer *CoreLightningNode,
+	peer LightningNode,
 	options *OpenChannelOptions,
 	timeout time.Time) *ChannelInfo {
 	channel := n.OpenChannel(peer, options)
@@ -307,25 +292,61 @@ func (n *CoreLightningNode) OpenChannelAndWait(
 	return channel
 }
 
-type CreateInvoiceOptions struct {
-	AmountMsat  uint64
-	Description *string
-	Preimage    *[]byte
-	Label       *string
-}
+func (n *CoreLightningNode) WaitForChannelReady(channel *ChannelInfo, timeout time.Time) ShortChannelID {
+	peerId := channel.GetPeer(n).NodeId()
 
-type CreateInvoiceResult struct {
-	Bolt11        string
-	PaymentHash   []byte
-	PaymentSecret []byte
-	ExpiresAt     uint64
+	for {
+		peers, err := n.rpc.ListPeers(n.harness.Ctx, &cln.ListpeersRequest{
+			Id: peerId,
+		})
+		CheckError(n.harness.T, err)
+
+		if len(peers.Peers) == 0 {
+			n.harness.T.Fatalf("Peer %x not found", peerId)
+		}
+
+		peer := peers.Peers[0]
+		if peer.Channels == nil {
+			n.harness.T.Fatal("no channels for peer")
+		}
+
+		channelIndex := slices.IndexFunc(
+			peer.Channels,
+			func(pc *cln.ListpeersPeersChannels) bool {
+				return bytes.Equal(pc.FundingTxid, channel.FundingTxId) &&
+					pc.FundingOutnum == &channel.FundingTxOutnum
+			},
+		)
+
+		if channelIndex >= 0 {
+			peerChannel := peer.Channels[channelIndex]
+			if peerChannel.State == cln.ListpeersPeersChannels_CHANNELD_NORMAL {
+				channelsResp, err := n.rpc.ListChannels(n.harness.Ctx, &cln.ListchannelsRequest{
+					ShortChannelId: peerChannel.ShortChannelId,
+				})
+				CheckError(n.harness.T, err)
+
+				// Wait for the channel to end up in the listchannels response.
+				if len(channelsResp.Channels) > 0 &&
+					channelsResp.Channels[0].Active {
+					return NewShortChanIDFromString(channelsResp.Channels[0].ShortChannelId)
+				}
+			}
+		}
+
+		if time.Now().After(timeout) {
+			n.harness.T.Fatal("timed out waiting for channel normal")
+		}
+
+		time.Sleep(waitSleepInterval)
+	}
 }
 
 func (n *CoreLightningNode) CreateBolt11Invoice(options *CreateInvoiceOptions) *CreateInvoiceResult {
-	req := &core_lightning.InvoiceRequest{
-		AmountMsat: &core_lightning.AmountOrAny{
-			Value: &core_lightning.AmountOrAny_Amount{
-				Amount: &core_lightning.Amount{
+	req := &cln.InvoiceRequest{
+		AmountMsat: &cln.AmountOrAny{
+			Value: &cln.AmountOrAny_Amount{
+				Amount: &cln.Amount{
 					Msat: options.AmountMsat,
 				},
 			},
@@ -340,10 +361,6 @@ func (n *CoreLightningNode) CreateBolt11Invoice(options *CreateInvoiceOptions) *
 		req.Preimage = *options.Preimage
 	}
 
-	if options.Label != nil {
-		req.Label = *options.Label
-	}
-
 	resp, err := n.rpc.Invoice(n.harness.Ctx, req)
 	CheckError(n.harness.T, err)
 
@@ -351,27 +368,11 @@ func (n *CoreLightningNode) CreateBolt11Invoice(options *CreateInvoiceOptions) *
 		Bolt11:        resp.Bolt11,
 		PaymentHash:   resp.PaymentHash,
 		PaymentSecret: resp.PaymentSecret,
-		ExpiresAt:     resp.ExpiresAt,
-	}
-}
-
-func (n *CoreLightningNode) AddInvoice(bolt11 string, preimage []byte, label string) *CreateInvoiceResult {
-	resp, err := n.rpc.CreateInvoice(n.harness.Ctx, &core_lightning.CreateinvoiceRequest{
-		Invstring: bolt11,
-		Preimage:  preimage,
-		Label:     label,
-	})
-	CheckError(n.harness.T, err)
-
-	return &CreateInvoiceResult{
-		Bolt11:      *resp.Bolt11,
-		PaymentHash: resp.PaymentHash,
-		ExpiresAt:   resp.ExpiresAt,
 	}
 }
 
 func (n *CoreLightningNode) SignMessage(message []byte) []byte {
-	resp, err := n.rpc.SignMessage(n.harness.Ctx, &core_lightning.SignmessageRequest{
+	resp, err := n.rpc.SignMessage(n.harness.Ctx, &cln.SignmessageRequest{
 		Message: hex.EncodeToString(message),
 	})
 	CheckError(n.harness.T, err)
@@ -379,19 +380,9 @@ func (n *CoreLightningNode) SignMessage(message []byte) []byte {
 	return resp.Signature
 }
 
-type PayResult struct {
-	PaymentHash     []byte
-	Parts           uint32
-	AmountMsat      uint64
-	Destination     []byte
-	CreatedAt       uint64
-	AmountSentMsat  uint64
-	PaymentPreimage []byte
-}
-
 func (n *CoreLightningNode) Pay(bolt11 string, timeout time.Time) *PayResult {
 	rpcTimeout := getTimeoutSeconds(n.harness.T, timeout)
-	resp, err := n.rpc.Pay(n.harness.Ctx, &core_lightning.PayRequest{
+	resp, err := n.rpc.Pay(n.harness.Ctx, &cln.PayRequest{
 		Bolt11:   bolt11,
 		RetryFor: &rpcTimeout,
 	})
@@ -399,30 +390,17 @@ func (n *CoreLightningNode) Pay(bolt11 string, timeout time.Time) *PayResult {
 
 	return &PayResult{
 		PaymentHash:     resp.PaymentHash,
-		Parts:           resp.Parts,
 		AmountMsat:      resp.AmountMsat.Msat,
 		Destination:     resp.Destination,
-		CreatedAt:       uint64(resp.CreatedAt),
 		AmountSentMsat:  resp.AmountSentMsat.Msat,
 		PaymentPreimage: resp.PaymentPreimage,
 	}
 }
 
-type Route struct {
-	Route []*Hop
-}
-
-type Hop struct {
-	Id         []byte
-	Channel    string
-	AmountMsat uint64
-	Delay      uint16
-}
-
 func (n *CoreLightningNode) GetRoute(destination []byte, amountMsat uint64) *Route {
-	route, err := n.rpc.GetRoute(n.harness.Ctx, &core_lightning.GetrouteRequest{
+	route, err := n.rpc.GetRoute(n.harness.Ctx, &cln.GetrouteRequest{
 		Id: destination,
-		AmountMsat: &core_lightning.Amount{
+		AmountMsat: &cln.Amount{
 			Msat: amountMsat,
 		},
 		Riskfactor: 0,
@@ -431,9 +409,9 @@ func (n *CoreLightningNode) GetRoute(destination []byte, amountMsat uint64) *Rou
 
 	result := &Route{}
 	for _, hop := range route.Route {
-		result.Route = append(result.Route, &Hop{
+		result.Hops = append(result.Hops, &Hop{
 			Id:         hop.Id,
-			Channel:    hop.Channel,
+			Channel:    NewShortChanIDFromString(hop.Channel),
 			AmountMsat: hop.AmountMsat.Msat,
 			Delay:      uint16(hop.Delay),
 		})
@@ -441,27 +419,23 @@ func (n *CoreLightningNode) GetRoute(destination []byte, amountMsat uint64) *Rou
 	return result
 }
 
-type PayViaRouteResponse struct {
-	PartId uint32
-}
-
-func (n *CoreLightningNode) StartPayViaRoute(amountMsat uint64, paymentHash []byte, route *Route) *PayViaRouteResponse {
-	var sendPayRoute []*core_lightning.SendpayRoute
-	for _, hop := range route.Route {
-		sendPayRoute = append(sendPayRoute, &core_lightning.SendpayRoute{
-			AmountMsat: &core_lightning.Amount{
+func (n *CoreLightningNode) startPayViaRoute(amountMsat uint64, paymentHash []byte, route *Route) *PayViaRouteResponse {
+	var sendPayRoute []*cln.SendpayRoute
+	for _, hop := range route.Hops {
+		sendPayRoute = append(sendPayRoute, &cln.SendpayRoute{
+			AmountMsat: &cln.Amount{
 				Msat: hop.AmountMsat,
 			},
 			Id:      hop.Id,
 			Delay:   uint32(hop.Delay),
-			Channel: hop.Channel,
+			Channel: hop.Channel.String(),
 		})
 	}
 
-	resp, err := n.rpc.SendPay(n.harness.Ctx, &core_lightning.SendpayRequest{
+	resp, err := n.rpc.SendPay(n.harness.Ctx, &cln.SendpayRequest{
 		Route:       sendPayRoute,
 		PaymentHash: paymentHash,
-		AmountMsat: &core_lightning.Amount{
+		AmountMsat: &cln.Amount{
 			Msat: amountMsat,
 		},
 	})
@@ -472,13 +446,13 @@ func (n *CoreLightningNode) StartPayViaRoute(amountMsat uint64, paymentHash []by
 	}
 }
 
-func (n *CoreLightningNode) PayViaRouteAndWait(
+func (n *CoreLightningNode) PayViaRoute(
 	amountMsat uint64,
 	paymentHash []byte,
 	route *Route,
-	timeout time.Time) *PayPartResult {
-	resp := n.StartPayViaRoute(amountMsat, paymentHash, route)
-	return n.WaitForPaymentPart(paymentHash, timeout, resp.PartId)
+	timeout time.Time) *PayResult {
+	resp := n.startPayViaRoute(amountMsat, paymentHash, route)
+	return n.waitForPaymentPart(paymentHash, timeout, resp.PartId)
 }
 
 func (n *CoreLightningNode) StartPayPartViaRoute(
@@ -487,22 +461,22 @@ func (n *CoreLightningNode) StartPayPartViaRoute(
 	paymentSecret []byte,
 	partId uint32,
 	route *Route) {
-	var sendPayRoute []*core_lightning.SendpayRoute
-	for _, hop := range route.Route {
-		sendPayRoute = append(sendPayRoute, &core_lightning.SendpayRoute{
-			AmountMsat: &core_lightning.Amount{
+	var sendPayRoute []*cln.SendpayRoute
+	for _, hop := range route.Hops {
+		sendPayRoute = append(sendPayRoute, &cln.SendpayRoute{
+			AmountMsat: &cln.Amount{
 				Msat: hop.AmountMsat,
 			},
 			Id:      hop.Id,
 			Delay:   uint32(hop.Delay),
-			Channel: hop.Channel,
+			Channel: hop.Channel.String(),
 		})
 	}
 
-	_, err := n.rpc.SendPay(n.harness.Ctx, &core_lightning.SendpayRequest{
+	_, err := n.rpc.SendPay(n.harness.Ctx, &cln.SendpayRequest{
 		Route:       sendPayRoute,
 		PaymentHash: paymentHash,
-		AmountMsat: &core_lightning.Amount{
+		AmountMsat: &cln.Amount{
 			Msat: amountMsat,
 		},
 		Partid:        &partId,
@@ -511,101 +485,27 @@ func (n *CoreLightningNode) StartPayPartViaRoute(
 	CheckError(n.harness.T, err)
 }
 
-type PayPartResult struct {
-	PaymentHash     []byte
-	PartId          *uint32
-	AmountMsat      uint64
-	Destination     []byte
-	CreatedAt       uint64
-	AmountSentMsat  uint64
-	PaymentPreimage []byte
-}
-
-func (n *CoreLightningNode) WaitForPaymentPart(paymentHash []byte, timeout time.Time, partId uint32) *PayPartResult {
+func (n *CoreLightningNode) waitForPaymentPart(paymentHash []byte, timeout time.Time, partId uint32) *PayResult {
 	rpcTimeout := getTimeoutSeconds(n.harness.T, timeout)
 	rpcPartId := uint64(partId)
-	resp, err := n.rpc.WaitSendPay(n.harness.Ctx, &core_lightning.WaitsendpayRequest{
+	resp, err := n.rpc.WaitSendPay(n.harness.Ctx, &cln.WaitsendpayRequest{
 		PaymentHash: paymentHash,
 		Timeout:     &rpcTimeout,
 		Partid:      &rpcPartId,
 	})
 	CheckError(n.harness.T, err)
-	var partid uint32
-	if resp.Partid != nil {
-		partid = uint32(*resp.Partid)
-	}
-	return &PayPartResult{
+
+	return &PayResult{
 		PaymentHash:     resp.PaymentHash,
-		PartId:          &partid,
 		AmountMsat:      resp.AmountMsat.Msat,
 		Destination:     resp.Destination,
-		CreatedAt:       resp.CreatedAt,
 		AmountSentMsat:  resp.AmountSentMsat.Msat,
 		PaymentPreimage: resp.PaymentPreimage,
 	}
 }
 
-func (n *CoreLightningNode) WaitForPaymentParts(paymentHash []byte, timeout time.Time, partIds ...uint32) []*PayPartResult {
-	var result []*PayPartResult
-	for _, partId := range partIds {
-		part := n.WaitForPaymentPart(paymentHash, timeout, partId)
-		result = append(result, part)
-	}
-
-	return result
-}
-
-type WaitPaymentCompleteResponse struct {
-	PaymentHash     []byte
-	AmountMsat      uint64
-	Destination     []byte
-	CreatedAt       uint64
-	AmountSentMsat  uint64
-	PaymentPreimage []byte
-}
-
-func (n *CoreLightningNode) WaitPaymentComplete(paymentHash []byte, parts uint32) *WaitPaymentCompleteResponse {
-	partid := uint64(parts)
-	resp, err := n.rpc.WaitSendPay(n.harness.Ctx, &core_lightning.WaitsendpayRequest{
-		PaymentHash: paymentHash,
-		Partid:      &partid,
-	})
-	CheckError(n.harness.T, err)
-
-	return &WaitPaymentCompleteResponse{
-		PaymentHash:     resp.PaymentHash,
-		AmountMsat:      resp.AmountMsat.Msat,
-		Destination:     resp.Destination,
-		CreatedAt:       resp.CreatedAt,
-		AmountSentMsat:  resp.AmountMsat.Msat,
-		PaymentPreimage: resp.PaymentPreimage,
-	}
-}
-
-type InvoiceStatus int32
-
-const (
-	Invoice_UNPAID  InvoiceStatus = 0
-	Invoice_PAID    InvoiceStatus = 1
-	Invoice_EXPIRED InvoiceStatus = 2
-)
-
-type GetInvoiceResponse struct {
-	Exists             bool
-	AmountMsat         uint64
-	AmountReceivedMsat uint64
-	Bolt11             *string
-	Description        *string
-	ExpiresAt          uint64
-	PaidAt             *uint64
-	PayerNote          *string
-	PaymentHash        []byte
-	PaymentPreimage    []byte
-	Status             InvoiceStatus
-}
-
 func (n *CoreLightningNode) GetInvoice(paymentHash []byte) *GetInvoiceResponse {
-	resp, err := n.rpc.ListInvoices(n.harness.Ctx, &core_lightning.ListinvoicesRequest{
+	resp, err := n.rpc.ListInvoices(n.harness.Ctx, &cln.ListinvoicesRequest{
 		PaymentHash: paymentHash,
 	})
 	CheckError(n.harness.T, err)
@@ -626,7 +526,8 @@ func (n *CoreLightningNode) GetInvoice(paymentHash []byte) *GetInvoiceResponse {
 		PayerNote:          invoice.PayerNote,
 		PaymentHash:        invoice.PaymentHash,
 		PaymentPreimage:    invoice.PaymentPreimage,
-		Status:             InvoiceStatus(invoice.Status),
+		IsPaid:             invoice.Status == cln.ListinvoicesInvoices_PAID,
+		IsExpired:          invoice.Status == cln.ListinvoicesInvoices_EXPIRED,
 	}
 }
 
@@ -642,13 +543,4 @@ func (n *CoreLightningNode) TearDown() error {
 	}
 
 	return n.cmd.Process.Signal(os.Interrupt)
-}
-
-func getTimeoutSeconds(t *testing.T, timeout time.Time) uint32 {
-	timeoutSeconds := time.Until(timeout).Seconds()
-	if timeoutSeconds < 0 {
-		CheckError(t, fmt.Errorf("timeout expired"))
-	}
-
-	return uint32(timeoutSeconds)
 }

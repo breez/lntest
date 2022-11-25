@@ -1,6 +1,6 @@
 syntax = "proto3";
 package cln;
-option go_package="github.com/breez/lntest/core_lightning";
+option go_package="github.com/breez/lntest/cln";
 
 message Amount {
 	uint64 msat = 1;

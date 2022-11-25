@@ -1,4 +1,4 @@
-package core_lightning
+package cln
 
 import (
 	"google.golang.org/grpc"
