@@ -18,10 +18,6 @@ type LightningNode interface {
 	Fund(amountSat uint64, timeout time.Time)
 	ConnectPeer(peer LightningNode)
 	OpenChannel(peer LightningNode, options *OpenChannelOptions) *ChannelInfo
-	OpenChannelAndWait(
-		peer LightningNode,
-		options *OpenChannelOptions,
-		timeout time.Time) (*ChannelInfo, ShortChannelID)
 	WaitForChannelReady(channel *ChannelInfo, timeout time.Time) ShortChannelID
 	CreateBolt11Invoice(options *CreateInvoiceOptions) *CreateInvoiceResult
 	SignMessage(message []byte) []byte

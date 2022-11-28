@@ -2,6 +2,7 @@ package lntest
 
 import (
 	"bufio"
+	"context"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -16,22 +17,21 @@ import (
 	"github.com/breez/lntest/lnd"
 	"golang.org/x/exp/slices"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 type LndNode struct {
-	name          string
-	nodeId        []byte
-	harness       *TestHarness
-	miner         *Miner
-	cmd           *exec.Cmd
-	dir           string
-	rpc           lnd.LightningClient
-	host          string
-	port          uint32
-	grpcHost      string
-	grpcPort      uint32
-	adminMacaroon []byte
-	tlsCert       []byte
+	name     string
+	nodeId   []byte
+	harness  *TestHarness
+	miner    *Miner
+	cmd      *exec.Cmd
+	dir      string
+	rpc      lnd.LightningClient
+	host     string
+	port     uint32
+	grpcHost string
+	grpcPort uint32
 }
 
 func NewLndNode(h *TestHarness, m *Miner, name string, timeout time.Time, extraArgs ...string) *LndNode {
@@ -47,6 +47,7 @@ func NewLndNode(h *TestHarness, m *Miner, name string, timeout time.Time, extraA
 	CheckError(h.T, err)
 
 	grpcAddress := fmt.Sprintf("%s:%d", host, grpcPort)
+
 	args := []string{
 		fmt.Sprintf("--lnddir=%s", lndDir),
 		"--debuglevel=debug",
@@ -58,6 +59,7 @@ func NewLndNode(h *TestHarness, m *Miner, name string, timeout time.Time, extraA
 		"--bitcoin.active",
 		"--bitcoin.node=bitcoind",
 		"--bitcoin.regtest",
+		fmt.Sprintf("--bitcoind.rpchost=localhost:%d", m.rpcPort),
 		fmt.Sprintf("--bitcoind.rpcuser=%s", m.rpcUser),
 		fmt.Sprintf("--bitcoind.rpcpass=%s", m.rpcPass),
 		"--bitcoind.rpcpolling",
@@ -103,7 +105,49 @@ func NewLndNode(h *TestHarness, m *Miner, name string, timeout time.Time, extraA
 		}
 	}()
 
-	conn, err := grpc.Dial(grpcAddress)
+	// Wait until TLS certificate is created
+	var tlsCreds credentials.TransportCredentials
+	exitTimer := time.After(time.Until(timeout))
+	for {
+		<-time.After(time.Millisecond * 50)
+
+		select {
+		case <-exitTimer:
+			h.T.Fatalf("tls.cert not created before timeout")
+		default:
+		}
+
+		tlsCreds, err = credentials.NewClientTLSFromFile(
+			filepath.Join(lndDir, "tls.cert"),
+			"",
+		)
+
+		if err == nil {
+			break
+		}
+
+		log.Printf("Waiting for tls cert to appear. error: %v", err)
+	}
+
+	CheckError(h.T, err)
+
+	opts := []grpc.DialOption{
+		grpc.WithBlock(),
+		grpc.WithTransportCredentials(tlsCreds),
+	}
+
+	tmpConn, err := grpc.DialContext(h.Ctx, grpcAddress, opts...)
+	CheckError(h.T, err)
+	defer tmpConn.Close()
+
+	waitServerStarted(h, tmpConn, timeout)
+	mac := initWallet(h, tmpConn, timeout)
+	waitServerActive(h, tmpConn, timeout)
+
+	macCred := NewMacaroonCredential(mac)
+	opts = append(opts, grpc.WithPerRPCCredentials(macCred))
+
+	conn, err := grpc.DialContext(h.Ctx, grpcAddress, opts...)
 	CheckError(h.T, err)
 
 	client := lnd.NewLightningClient(conn)
@@ -115,26 +159,18 @@ func NewLndNode(h *TestHarness, m *Miner, name string, timeout time.Time, extraA
 	nodeId, err := hex.DecodeString(info.IdentityPubkey)
 	CheckError(h.T, err)
 
-	adminMacaroon, err := os.ReadFile(filepath.Join(lndDir, "data", "bitcoin", "regtest", "admin.macaroon"))
-	CheckError(h.T, err)
-
-	tlsCert, err := os.ReadFile(filepath.Join(lndDir, "tls.cert"))
-	CheckError(h.T, err)
-
 	node := &LndNode{
-		name:          name,
-		nodeId:        nodeId,
-		harness:       h,
-		miner:         m,
-		cmd:           cmd,
-		dir:           lndDir,
-		rpc:           client,
-		port:          port,
-		host:          host,
-		grpcHost:      host,
-		grpcPort:      grpcPort,
-		adminMacaroon: adminMacaroon,
-		tlsCert:       tlsCert,
+		name:     name,
+		nodeId:   nodeId,
+		harness:  h,
+		miner:    m,
+		cmd:      cmd,
+		dir:      lndDir,
+		rpc:      client,
+		port:     port,
+		host:     host,
+		grpcHost: host,
+		grpcPort: grpcPort,
 	}
 
 	h.AddStoppable(node)
@@ -227,16 +263,6 @@ func (n *LndNode) OpenChannel(peer LightningNode, options *OpenChannelOptions) *
 	}
 }
 
-func (n *LndNode) OpenChannelAndWait(
-	peer LightningNode,
-	options *OpenChannelOptions,
-	timeout time.Time) (*ChannelInfo, ShortChannelID) {
-	channel := n.OpenChannel(peer, options)
-	n.miner.MineBlocks(6)
-	cid := channel.WaitForChannelReady(timeout)
-	return channel, cid
-}
-
 func (n *LndNode) WaitForChannelReady(channel *ChannelInfo, timeout time.Time) ShortChannelID {
 	peerId := channel.GetPeer(n).NodeId()
 	peerIdStr := hex.EncodeToString(peerId)
@@ -262,6 +288,25 @@ func (n *LndNode) WaitForChannelReady(channel *ChannelInfo, timeout time.Time) S
 		if index >= 0 {
 			c := lc.Channels[index]
 			return NewShortChanIDFromInt(c.ChanId)
+		}
+
+		pending, err := n.rpc.PendingChannels(n.harness.Ctx, &lnd.PendingChannelsRequest{})
+		CheckError(n.harness.T, err)
+
+		pendingIndex := slices.IndexFunc(pending.PendingOpenChannels, func(c *lnd.PendingChannelsResponse_PendingOpenChannel) bool {
+			s := strings.Split(c.Channel.ChannelPoint, ":")
+			txid := s[0]
+			out, err := strconv.ParseUint(s[1], 10, 32)
+			CheckError(n.harness.T, err)
+			return c.Channel.RemoteNodePub == peerIdStr &&
+				txid == txidStr &&
+				out == uint64(channel.FundingTxOutnum)
+		})
+
+		if pendingIndex >= 0 {
+			n.miner.MineBlocks(6)
+			n.WaitForSync(timeout)
+			continue
 		}
 
 		if time.Now().After(timeout) {
@@ -430,4 +475,73 @@ func (n *LndNode) TearDown() error {
 	}
 
 	return n.cmd.Process.Signal(os.Interrupt)
+}
+
+func waitServerActive(h *TestHarness, conn grpc.ClientConnInterface, timeout time.Time) {
+	waitServerState(h, conn, timeout, func(s lnd.WalletState) bool {
+		return s == lnd.WalletState_SERVER_ACTIVE
+	})
+}
+
+func waitServerStarted(h *TestHarness, conn grpc.ClientConnInterface, timeout time.Time) {
+	waitServerState(h, conn, timeout, func(s lnd.WalletState) bool {
+		return s != lnd.WalletState_WAITING_TO_START
+	})
+}
+
+func waitServerState(h *TestHarness, conn grpc.ClientConnInterface, timeout time.Time, pred func(s lnd.WalletState) bool) {
+	ctx, cancel := context.WithTimeout(h.Ctx, time.Until(timeout))
+	defer cancel()
+
+	state := lnd.NewStateClient(conn)
+	client, err := state.SubscribeState(ctx, &lnd.SubscribeStateRequest{})
+	CheckError(h.T, err)
+
+	errChan := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		for {
+			resp, err := client.Recv()
+			if err != nil {
+				errChan <- err
+				return
+			}
+
+			if pred(resp.State) {
+				close(done)
+				return
+			}
+		}
+	}()
+
+	var lastErr error
+	for {
+		select {
+		case err := <-errChan:
+			lastErr = err
+
+		case <-done:
+			return
+
+		case <-time.After(time.Until(timeout)):
+			h.T.Fatalf("timeout waiting for LND to start. last error: %v", lastErr)
+		}
+	}
+}
+
+func initWallet(h *TestHarness, conn grpc.ClientConnInterface, timeout time.Time) []byte {
+	ctx, cancel := context.WithTimeout(h.Ctx, time.Until(timeout))
+	defer cancel()
+
+	c := lnd.NewWalletUnlockerClient(conn)
+	seed, err := c.GenSeed(ctx, &lnd.GenSeedRequest{})
+	CheckError(h.T, err)
+
+	resp, err := c.InitWallet(ctx, &lnd.InitWalletRequest{
+		WalletPassword:     []byte("super-secret-password"),
+		CipherSeedMnemonic: seed.CipherSeedMnemonic,
+	})
+	CheckError(h.T, err)
+
+	return resp.AdminMacaroon
 }

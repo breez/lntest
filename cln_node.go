@@ -282,16 +282,6 @@ func (n *CoreLightningNode) OpenChannel(peer LightningNode, options *OpenChannel
 	}
 }
 
-func (n *CoreLightningNode) OpenChannelAndWait(
-	peer LightningNode,
-	options *OpenChannelOptions,
-	timeout time.Time) (*ChannelInfo, ShortChannelID) {
-	channel := n.OpenChannel(peer, options)
-	n.miner.MineBlocks(6)
-	cid := channel.WaitForChannelReady(timeout)
-	return channel, cid
-}
-
 func (n *CoreLightningNode) WaitForChannelReady(channel *ChannelInfo, timeout time.Time) ShortChannelID {
 	peerId := channel.GetPeer(n).NodeId()
 
@@ -320,6 +310,12 @@ func (n *CoreLightningNode) WaitForChannelReady(channel *ChannelInfo, timeout ti
 
 		if channelIndex >= 0 {
 			peerChannel := peer.Channels[channelIndex]
+			if peerChannel.State == cln.ListpeersPeersChannels_CHANNELD_AWAITING_LOCKIN {
+				n.miner.MineBlocks(6)
+				n.WaitForSync(timeout)
+				continue
+			}
+
 			if peerChannel.State == cln.ListpeersPeersChannels_CHANNELD_NORMAL {
 				channelsResp, err := n.rpc.ListChannels(n.harness.Ctx, &cln.ListchannelsRequest{
 					ShortChannelId: peerChannel.ShortChannelId,
