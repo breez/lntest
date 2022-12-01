@@ -19,3 +19,6 @@ require (
 	golang.org/x/text v0.3.3 // indirect
 	google.golang.org/genproto v0.0.0-20200526211855-cb27e3aa2013 // indirect
 )
+
+
+replace github.com/niftynei/glightning v0.8.2 => github.com/breez/glightning v0.0.0-20221201090905-688d312b61f4

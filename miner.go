@@ -51,21 +51,32 @@ func NewMiner(h *TestHarness) *Miner {
 
 	err = cmd.Start()
 	CheckError(h.T, err)
-	log.Printf("bitcoind started (%d)!", cmd.Process.Pid)
+	log.Printf("miner: bitcoind started (%d)!", cmd.Process.Pid)
 
 	rpc := gbitcoin.NewBitcoin(btcUser, btcPass)
 	rpc.SetTimeout(uint(2))
 
-	log.Printf("Starting up bitcoin client")
+	log.Printf("miner: Starting up bitcoin client")
 	rpc.StartUp("http://localhost", bitcoindDir, uint(rpcPort))
 
-	// Go ahead and run 50 blocks
+	l := true
+	d := false
+	_, err = rpc.CreateWallet(&gbitcoin.CreateWalletRequest{
+		WalletName:    "default",
+		LoadOnStartup: &l,
+		Descriptors:   &d,
+	})
+	if err != nil {
+		log.Printf("miner: Create wallet failed. Ignoring error: %v", err)
+	}
+
+	// Go ahead and run 101 blocks
 	log.Printf("Get new address")
 	addr, err := rpc.GetNewAddress(gbitcoin.Bech32)
 	CheckError(h.T, err)
 
 	log.Printf("Generate to address")
-	_, err = rpc.GenerateToAddress(addr, 200)
+	_, err = rpc.GenerateToAddress(addr, 101)
 	CheckError(h.T, err)
 
 	miner := &Miner{
@@ -94,7 +105,7 @@ func (m *Miner) SendToAddress(addr string, amountSat uint64) {
 	amountBtc := amountSat / uint64(100000000)
 	amountSatRemainder := amountSat % 100000000
 	amountStr := strconv.FormatUint(amountBtc, 10) + "." + fmt.Sprintf("%08s", strconv.FormatUint(amountSatRemainder, 10))
-	log.Printf("Sending %s btc to address %s", amountStr, addr)
+	log.Printf("miner: Sending %s btc to address %s", amountStr, addr)
 	_, err := m.rpc.SendToAddress(addr, amountStr)
 	CheckError(m.harness.T, err)
 
