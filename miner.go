@@ -13,13 +13,15 @@ import (
 )
 
 type Miner struct {
-	harness *TestHarness
-	dir     string
-	rpc     *gbitcoin.Bitcoin
-	rpcPort uint32
-	rpcUser string
-	rpcPass string
-	cmd     *exec.Cmd
+	harness         *TestHarness
+	dir             string
+	rpc             *gbitcoin.Bitcoin
+	rpcPort         uint32
+	rpcUser         string
+	rpcPass         string
+	cmd             *exec.Cmd
+	zmqBlockAddress string
+	zmqTxAddress    string
 }
 
 func NewMiner(h *TestHarness) *Miner {
@@ -29,9 +31,18 @@ func NewMiner(h *TestHarness) *Miner {
 	rpcPort, err := GetPort()
 	CheckError(h.T, err)
 
+	zmqBlockPort, err := GetPort()
+	CheckError(h.T, err)
+
+	zmqTxPort, err := GetPort()
+	CheckError(h.T, err)
+
 	binary, err := GetBitcoindBinary()
 	CheckError(h.T, err)
 
+	host := "127.0.0.1"
+	zmqBlockAddress := fmt.Sprintf("tcp://%s:%d", host, zmqBlockPort)
+	zmqTxAddress := fmt.Sprintf("tcp://%s:%d", host, zmqTxPort)
 	args := []string{
 		"-regtest",
 		"-server",
@@ -44,6 +55,8 @@ func NewMiner(h *TestHarness) *Miner {
 		fmt.Sprintf("-rpcport=%d", rpcPort),
 		fmt.Sprintf("-rpcpassword=%s", btcPass),
 		fmt.Sprintf("-rpcuser=%s", btcUser),
+		fmt.Sprintf("-zmqpubrawblock=%s", zmqBlockAddress),
+		fmt.Sprintf("-zmqpubrawtx=%s", zmqTxAddress),
 	}
 
 	log.Printf("starting %s on rpc port %d in dir %s...", binary, rpcPort, bitcoindDir)
@@ -80,18 +93,28 @@ func NewMiner(h *TestHarness) *Miner {
 	CheckError(h.T, err)
 
 	miner := &Miner{
-		harness: h,
-		dir:     bitcoindDir,
-		cmd:     cmd,
-		rpc:     rpc,
-		rpcPort: rpcPort,
-		rpcUser: btcUser,
-		rpcPass: btcPass,
+		harness:         h,
+		dir:             bitcoindDir,
+		cmd:             cmd,
+		rpc:             rpc,
+		rpcPort:         rpcPort,
+		rpcUser:         btcUser,
+		rpcPass:         btcPass,
+		zmqBlockAddress: zmqBlockAddress,
+		zmqTxAddress:    zmqTxAddress,
 	}
 
 	h.AddStoppable(miner)
 	h.RegisterLogfile(filepath.Join(bitcoindDir, "regtest", "debug.log"), filepath.Base(bitcoindDir))
 	return miner
+}
+
+func (m *Miner) ZmqBlockAddress() string {
+	return m.zmqBlockAddress
+}
+
+func (m *Miner) ZmqTxAddress() string {
+	return m.zmqTxAddress
 }
 
 func (m *Miner) MineBlocks(n uint) {

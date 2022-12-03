@@ -213,12 +213,12 @@ func (n *CoreLightningNode) WaitForSync(timeout time.Time) {
 
 		if (info.WarningLightningdSync == nil || *info.WarningLightningdSync == "") &&
 			info.Blockheight >= blockHeight {
-			log.Printf("node %s is synced to blockheight %d", n.name, blockHeight)
+			log.Printf("%s: Synced to blockheight %d", n.name, blockHeight)
 			break
 		}
 
 		log.Printf(
-			"Waiting for node %s to sync. Actual block height: %d, node block height: %d",
+			"%s: Waiting to sync. Actual block height: %d, node block height: %d",
 			n.name,
 			blockHeight,
 			info.Blockheight,
@@ -491,6 +491,46 @@ func (n *CoreLightningNode) GetInvoice(paymentHash []byte) *GetInvoiceResponse {
 		IsPaid:             invoice.Status == cln.ListinvoicesInvoices_PAID,
 		IsExpired:          invoice.Status == cln.ListinvoicesInvoices_EXPIRED,
 	}
+}
+
+func (n *CoreLightningNode) GetPeerFeatures(peerId []byte) map[uint32]string {
+	resp, err := n.rpc.ListPeers(n.harness.Ctx, &cln.ListpeersRequest{
+		Id: peerId,
+	})
+	CheckError(n.harness.T, err)
+
+	r := make(map[uint32]string)
+	if len(resp.Peers) == 0 {
+		return r
+	}
+	node := resp.Peers[0]
+	return n.mapFeatures(node.Features)
+}
+
+func (n *CoreLightningNode) GetRemoteNodeFeatures(nodeId []byte) map[uint32]string {
+	resp, err := n.rpc.ListNodes(n.harness.Ctx, &cln.ListnodesRequest{
+		Id: nodeId,
+	})
+	CheckError(n.harness.T, err)
+
+	if len(resp.Nodes) == 0 {
+		return make(map[uint32]string)
+	}
+	node := resp.Nodes[0]
+	return n.mapFeatures(node.Features)
+}
+
+func (n *CoreLightningNode) mapFeatures(f []byte) map[uint32]string {
+	r := make(map[uint32]string)
+	for i := 0; i < len(f); i++ {
+		b := f[i]
+		for j := 0; j < 8; j++ {
+			if ((b >> j) & 1) != 0 {
+				r[uint32(i)*8+uint32(j)] = ""
+			}
+		}
+	}
+	return r
 }
 
 func (n *CoreLightningNode) TearDown() error {

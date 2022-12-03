@@ -30,6 +30,8 @@ type LightningNode interface {
 		route *Route,
 		timeout time.Time) *PayResult
 	GetInvoice(paymentHash []byte) *GetInvoiceResponse
+	GetPeerFeatures(peerId []byte) map[uint32]string
+	GetRemoteNodeFeatures(nodeId []byte) map[uint32]string
 }
 
 type OpenChannelOptions struct {

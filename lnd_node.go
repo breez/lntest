@@ -31,6 +31,9 @@ type LndNode struct {
 	port     uint32
 	grpcHost string
 	grpcPort uint32
+	tlsCert  []byte
+	macaroon []byte
+	logFile  *os.File
 }
 
 func NewLndNode(h *TestHarness, m *Miner, name string, timeout time.Time, extraArgs ...string) *LndNode {
@@ -66,15 +69,21 @@ func NewLndNode(h *TestHarness, m *Miner, name string, timeout time.Time, extraA
 		fmt.Sprintf("--bitcoind.rpchost=localhost:%d", m.rpcPort),
 		fmt.Sprintf("--bitcoind.rpcuser=%s", m.rpcUser),
 		fmt.Sprintf("--bitcoind.rpcpass=%s", m.rpcPass),
-		"--bitcoind.rpcpolling",
-		"--bitcoind.blockpollinginterval=10ms",
-		"--bitcoind.txpollinginterval=10ms",
+		fmt.Sprintf("--bitcoind.zmqpubrawblock=%s", m.zmqBlockAddress),
+		fmt.Sprintf("--bitcoind.zmqpubrawtx=%s", m.zmqTxAddress),
 		"--gossip.channel-update-interval=10ms",
 		"--db.batch-commit-interval=10ms",
 	}
 
 	cmd := exec.CommandContext(h.Ctx, binary, append(args, extraArgs...)...)
+	logFilePath := filepath.Join(lndDir, "lnd-stdouterr.log")
+	logFile, err := os.Create(logFilePath)
+	CheckError(h.T, err)
+
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 	log.Printf("%s: starting %s on port %d in dir %s...", name, binary, port, lndDir)
+
 	err = cmd.Start()
 	CheckError(h.T, err)
 
@@ -88,10 +97,11 @@ func NewLndNode(h *TestHarness, m *Miner, name string, timeout time.Time, extraA
 	}()
 
 	// Wait until TLS certificate is created
+	tlsCertPath := filepath.Join(lndDir, "tls.cert")
 	var tlsCreds credentials.TransportCredentials
 	for {
 		tlsCreds, err = credentials.NewClientTLSFromFile(
-			filepath.Join(lndDir, "tls.cert"),
+			tlsCertPath,
 			"",
 		)
 
@@ -134,7 +144,17 @@ func NewLndNode(h *TestHarness, m *Miner, name string, timeout time.Time, extraA
 
 	log.Printf("%s: Has node id %s", name, info.IdentityPubkey)
 
+	var features string
+	for i, f := range info.Features {
+		features += strconv.FormatUint(uint64(i), 10)
+		features += ":"
+		features += f.Name
+	}
+	log.Printf("%s: Has features: %s", name, features)
 	nodeId, err := hex.DecodeString(info.IdentityPubkey)
+	CheckError(h.T, err)
+
+	tlsCert, err := os.ReadFile(tlsCertPath)
 	CheckError(h.T, err)
 
 	node := &LndNode{
@@ -149,10 +169,14 @@ func NewLndNode(h *TestHarness, m *Miner, name string, timeout time.Time, extraA
 		host:     host,
 		grpcHost: host,
 		grpcPort: grpcPort,
+		tlsCert:  tlsCert,
+		macaroon: mac,
+		logFile:  logFile,
 	}
 
 	h.AddStoppable(node)
 	h.RegisterLogfile(filepath.Join(lndDir, "logs", "bitcoin", "regtest", "lnd.log"), fmt.Sprintf("lnd-%s", name))
+	h.RegisterLogfile(logFilePath, fmt.Sprintf("lnd-stdout-%s", name))
 
 	return node
 }
@@ -171,6 +195,18 @@ func (n *LndNode) Port() uint32 {
 
 func (n *LndNode) PrivateKey() []byte {
 	return n.nodeId
+}
+
+func (n *LndNode) TlsCert() []byte {
+	return n.tlsCert
+}
+
+func (n *LndNode) Macaroon() []byte {
+	return n.macaroon
+}
+
+func (n *LndNode) GrpcHost() string {
+	return fmt.Sprintf("%s:%d", n.grpcHost, n.grpcPort)
 }
 
 func (n *LndNode) WaitForSync(timeout time.Time) {
@@ -265,26 +301,31 @@ func (n *LndNode) WaitForChannelReady(channel *ChannelInfo, timeout time.Time) S
 
 		if index >= 0 {
 			c := lc.Channels[index]
-			return NewShortChanIDFromInt(c.ChanId)
-		}
+			if c.Active {
+				return NewShortChanIDFromInt(c.ChanId)
+			}
+			log.Printf("%s: Waiting for channel to become active.", n.name)
+		} else {
 
-		pending, err := n.rpc.PendingChannels(n.harness.Ctx, &lnd.PendingChannelsRequest{})
-		CheckError(n.harness.T, err)
-
-		pendingIndex := slices.IndexFunc(pending.PendingOpenChannels, func(c *lnd.PendingChannelsResponse_PendingOpenChannel) bool {
-			s := strings.Split(c.Channel.ChannelPoint, ":")
-			txid := s[0]
-			out, err := strconv.ParseUint(s[1], 10, 32)
+			pending, err := n.rpc.PendingChannels(n.harness.Ctx, &lnd.PendingChannelsRequest{})
 			CheckError(n.harness.T, err)
-			return c.Channel.RemoteNodePub == peerIdStr &&
-				txid == txidStr &&
-				out == uint64(channel.FundingTxOutnum)
-		})
 
-		if pendingIndex >= 0 {
-			n.miner.MineBlocks(6)
-			n.WaitForSync(timeout)
-			continue
+			pendingIndex := slices.IndexFunc(pending.PendingOpenChannels, func(c *lnd.PendingChannelsResponse_PendingOpenChannel) bool {
+				s := strings.Split(c.Channel.ChannelPoint, ":")
+				txid := s[0]
+				out, err := strconv.ParseUint(s[1], 10, 32)
+				CheckError(n.harness.T, err)
+				return c.Channel.RemoteNodePub == peerIdStr &&
+					txid == txidStr &&
+					out == uint64(channel.FundingTxOutnum)
+			})
+
+			if pendingIndex >= 0 {
+				log.Printf("%s: Channel is pending. Mining some blocks.", n.name)
+				n.miner.MineBlocks(6)
+				n.WaitForSync(timeout)
+				continue
+			}
 		}
 
 		if time.Now().After(timeout) {
@@ -441,7 +482,51 @@ func (n *LndNode) GetInvoice(paymentHash []byte) *GetInvoiceResponse {
 	}
 }
 
+func (n *LndNode) GetPeerFeatures(peerId []byte) map[uint32]string {
+	pubkey := hex.EncodeToString(peerId)
+	resp, err := n.rpc.ListPeers(n.harness.Ctx, &lnd.ListPeersRequest{})
+	CheckError(n.harness.T, err)
+
+	for _, p := range resp.Peers {
+		if p.PubKey == pubkey {
+			return n.mapFeatures(p.Features)
+		}
+	}
+
+	return make(map[uint32]string)
+}
+
+func (n *LndNode) mapFeatures(features map[uint32]*lnd.Feature) map[uint32]string {
+	r := make(map[uint32]string)
+	for i, f := range features {
+		r[i] = f.Name
+	}
+
+	return r
+}
+
+func (n *LndNode) GetRemoteNodeFeatures(nodeId []byte) map[uint32]string {
+	resp, err := n.rpc.GetNodeInfo(n.harness.Ctx, &lnd.NodeInfoRequest{
+		PubKey: hex.EncodeToString(nodeId),
+	})
+	CheckError(n.harness.T, err)
+
+	r := make(map[uint32]string)
+	for i, f := range resp.Node.Features {
+		r[i] = f.Name
+	}
+
+	return r
+}
+
 func (n *LndNode) TearDown() error {
+	if n.logFile != nil {
+		err := n.logFile.Close()
+		if err != nil {
+			log.Printf("error closing logfile: %v", err)
+		}
+	}
+
 	if n.cmd == nil || n.cmd.Process == nil {
 		// return if not properly initialized
 		// or error starting the process
@@ -482,12 +567,12 @@ func waitServerState(h *TestHarness, conn grpc.ClientConnInterface, timeout time
 	go func() {
 		for {
 			resp, err := client.Recv()
-			log.Printf("%s: Wallet state: %v", name, resp.State)
 			if err != nil {
 				errChan <- err
 				return
 			}
 
+			log.Printf("%s: Wallet state: %v", name, resp.State)
 			if pred(resp.State) {
 				close(done)
 				return

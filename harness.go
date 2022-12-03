@@ -161,6 +161,7 @@ func (h *TestHarness) cleanup() error {
 			_, err = io.Copy(dst, src)
 			if err != nil {
 				log.Printf("Could not preserve log %s with name %s, error: %v", logFile.path, logFileName, err)
+				continue
 			}
 		}
 
