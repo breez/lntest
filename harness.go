@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"go.uber.org/multierr"
 	"golang.org/x/exp/slices"
@@ -19,6 +20,7 @@ type TestHarness struct {
 	*testing.T
 	Ctx           context.Context
 	cancel        context.CancelFunc
+	deadline      time.Time
 	Dir           string
 	mtx           sync.RWMutex
 	stoppables    []Stoppable
@@ -50,7 +52,7 @@ const (
 	PreserveState HarnessOption = 2
 )
 
-func NewTestHarness(t *testing.T, options ...HarnessOption) *TestHarness {
+func NewTestHarness(t *testing.T, deadline time.Time, options ...HarnessOption) *TestHarness {
 	rootDir, err := GetTestRootDir()
 	CheckError(t, err)
 
@@ -58,7 +60,7 @@ func NewTestHarness(t *testing.T, options ...HarnessOption) *TestHarness {
 	CheckError(t, err)
 
 	log.Printf("Testing directory for this harness: '%s'", testDir)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	h := &TestHarness{
 		T:             t,
 		Ctx:           ctx,
@@ -70,6 +72,10 @@ func NewTestHarness(t *testing.T, options ...HarnessOption) *TestHarness {
 	}
 
 	return h
+}
+
+func (h *TestHarness) Deadline() time.Time {
+	return h.deadline
 }
 
 func (h *TestHarness) GetDirectory(pattern string) string {

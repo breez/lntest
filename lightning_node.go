@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 )
 
 type LightningNode interface {
@@ -14,21 +13,20 @@ type LightningNode interface {
 	TearDown() error
 	PrivateKey() []byte
 
-	WaitForSync(timeout time.Time)
-	Fund(amountSat uint64, timeout time.Time)
+	WaitForSync()
+	Fund(amountSat uint64)
 	ConnectPeer(peer LightningNode)
 	OpenChannel(peer LightningNode, options *OpenChannelOptions) *ChannelInfo
-	WaitForChannelReady(channel *ChannelInfo, timeout time.Time) ShortChannelID
+	WaitForChannelReady(channel *ChannelInfo) ShortChannelID
 	CreateBolt11Invoice(options *CreateInvoiceOptions) *CreateInvoiceResult
 	SignMessage(message []byte) []byte
-	Pay(bolt11 string, timeout time.Time) *PayResult
+	Pay(bolt11 string) *PayResult
 	GetRoute(destination []byte, amountMsat uint64) *Route
 	PayViaRoute(
 		amountMsat uint64,
 		paymentHash []byte,
 		paymentSecret []byte,
-		route *Route,
-		timeout time.Time) *PayResult
+		route *Route) *PayResult
 	GetInvoice(paymentHash []byte) *GetInvoiceResponse
 	GetPeerFeatures(peerId []byte) map[uint32]string
 	GetRemoteNodeFeatures(nodeId []byte) map[uint32]string

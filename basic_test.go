@@ -7,20 +7,21 @@ import (
 )
 
 func TestOpenChannel(t *testing.T) {
-	harness := NewTestHarness(t)
+	deadline := time.Now().Add(time.Minute)
+	harness := NewTestHarness(t, deadline)
 	defer harness.TearDown()
-	timeout := time.Now().Add(time.Minute)
+
 	log.Print("Initializing miner")
 	miner := NewMiner(harness)
 
 	log.Print("Initializing Alice")
-	alice := NewCoreLightningNode(harness, miner, "Alice", timeout)
+	alice := NewCoreLightningNode(harness, miner, "Alice")
 
 	log.Print("Initializing Bob")
-	bob := NewCoreLightningNode(harness, miner, "Bob", timeout)
+	bob := NewCoreLightningNode(harness, miner, "Bob")
 
 	log.Print("Funding alice")
-	alice.Fund(10000000, timeout)
+	alice.Fund(10000000)
 
 	channelOptions := &OpenChannelOptions{
 		AmountSat: 1000000,
@@ -31,5 +32,5 @@ func TestOpenChannel(t *testing.T) {
 	miner.MineBlocks(6)
 
 	log.Print("Waiting for channel ready")
-	channel.WaitForChannelReady(timeout)
+	channel.WaitForChannelReady()
 }

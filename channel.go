@@ -2,7 +2,6 @@ package lntest
 
 import (
 	"bytes"
-	"time"
 )
 
 type ChannelInfo struct {
@@ -12,9 +11,9 @@ type ChannelInfo struct {
 	FundingTxOutnum uint32
 }
 
-func (c *ChannelInfo) WaitForChannelReady(timeout time.Time) ShortChannelID {
-	c.From.WaitForChannelReady(c, timeout)
-	return c.To.WaitForChannelReady(c, timeout)
+func (c *ChannelInfo) WaitForChannelReady() ShortChannelID {
+	c.From.WaitForChannelReady(c)
+	return c.To.WaitForChannelReady(c)
 }
 
 func (c *ChannelInfo) GetPeer(this LightningNode) LightningNode {

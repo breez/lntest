@@ -1,6 +1,8 @@
 package lntest
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"net"
@@ -137,4 +139,24 @@ func getTimeoutSeconds(t *testing.T, timeout time.Time) uint32 {
 	}
 
 	return uint32(timeoutSeconds)
+}
+
+func GenerateRandomBytes(n int) ([]byte, error) {
+	b := make([]byte, n)
+	_, err := rand.Read(b)
+	// Note that err == nil only if we read len(b) bytes.
+	if err != nil {
+		return nil, err
+	}
+
+	return b, nil
+}
+
+func GenerateRandomString() (string, error) {
+	b, err := GenerateRandomBytes(32)
+	if err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(b), nil
 }

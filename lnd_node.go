@@ -1,7 +1,6 @@
 package lntest
 
 import (
-	"context"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -36,7 +35,7 @@ type LndNode struct {
 	logFile  *os.File
 }
 
-func NewLndNode(h *TestHarness, m *Miner, name string, timeout time.Time, extraArgs ...string) *LndNode {
+func NewLndNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *LndNode {
 	lndDir := h.GetDirectory(fmt.Sprintf("lnd-%s", name))
 	log.Printf("%s: Creating LND node in dir %s", name, lndDir)
 	host := "localhost"
@@ -109,7 +108,7 @@ func NewLndNode(h *TestHarness, m *Miner, name string, timeout time.Time, extraA
 			break
 		}
 
-		if time.Now().After(timeout) {
+		if time.Now().After(h.Deadline()) {
 			h.T.Fatalf("%s: tls.cert not created before timeout", name)
 		}
 
@@ -128,9 +127,9 @@ func NewLndNode(h *TestHarness, m *Miner, name string, timeout time.Time, extraA
 	CheckError(h.T, err)
 	defer tmpConn.Close()
 
-	waitServerStarted(h, tmpConn, timeout, name)
-	mac := initWallet(h, tmpConn, timeout, name)
-	waitServerActive(h, tmpConn, timeout, name)
+	waitServerStarted(h, tmpConn, name)
+	mac := initWallet(h, tmpConn, name)
+	waitServerActive(h, tmpConn, name)
 
 	macCred := NewMacaroonCredential(mac)
 	opts = append(opts, grpc.WithPerRPCCredentials(macCred))
@@ -209,7 +208,7 @@ func (n *LndNode) GrpcHost() string {
 	return fmt.Sprintf("%s:%d", n.grpcHost, n.grpcPort)
 }
 
-func (n *LndNode) WaitForSync(timeout time.Time) {
+func (n *LndNode) WaitForSync() {
 	for {
 		info, _ := n.rpc.GetInfo(n.harness.Ctx, &lnd.GetInfoRequest{})
 
@@ -227,7 +226,7 @@ func (n *LndNode) WaitForSync(timeout time.Time) {
 			info.BlockHeight,
 		)
 
-		if time.Now().After(timeout) {
+		if time.Now().After(n.harness.Deadline()) {
 			n.harness.T.Fatalf("%s: timed out waiting for channel normal", n.name)
 		}
 
@@ -235,7 +234,7 @@ func (n *LndNode) WaitForSync(timeout time.Time) {
 	}
 }
 
-func (n *LndNode) Fund(amountSat uint64, timeout time.Time) {
+func (n *LndNode) Fund(amountSat uint64) {
 	addrResponse, err := n.rpc.NewAddress(
 		n.harness.Ctx,
 		&lnd.NewAddressRequest{
@@ -245,7 +244,7 @@ func (n *LndNode) Fund(amountSat uint64, timeout time.Time) {
 	CheckError(n.harness.T, err)
 
 	n.miner.SendToAddress(addrResponse.Address, amountSat)
-	n.WaitForSync(timeout)
+	n.WaitForSync()
 }
 
 func (n *LndNode) ConnectPeer(peer LightningNode) {
@@ -277,7 +276,7 @@ func (n *LndNode) OpenChannel(peer LightningNode, options *OpenChannelOptions) *
 	}
 }
 
-func (n *LndNode) WaitForChannelReady(channel *ChannelInfo, timeout time.Time) ShortChannelID {
+func (n *LndNode) WaitForChannelReady(channel *ChannelInfo) ShortChannelID {
 	peerId := channel.GetPeer(n).NodeId()
 	peerIdStr := hex.EncodeToString(peerId)
 	txidStr := hex.EncodeToString(channel.FundingTxId)
@@ -323,12 +322,12 @@ func (n *LndNode) WaitForChannelReady(channel *ChannelInfo, timeout time.Time) S
 			if pendingIndex >= 0 {
 				log.Printf("%s: Channel is pending. Mining some blocks.", n.name)
 				n.miner.MineBlocks(6)
-				n.WaitForSync(timeout)
+				n.WaitForSync()
 				continue
 			}
 		}
 
-		if time.Now().After(timeout) {
+		if time.Now().After(n.harness.Deadline()) {
 			n.harness.T.Fatalf("%s: timed out waiting for channel normal", n.name)
 		}
 
@@ -370,8 +369,7 @@ func (n *LndNode) SignMessage(message []byte) []byte {
 	return sig
 }
 
-func (n *LndNode) Pay(bolt11 string, timeout time.Time) *PayResult {
-	// NOTE: Ignoring the timeout
+func (n *LndNode) Pay(bolt11 string) *PayResult {
 	resp, err := n.rpc.SendPaymentSync(n.harness.Ctx, &lnd.SendRequest{
 		PaymentRequest: bolt11,
 	})
@@ -418,7 +416,7 @@ func (n *LndNode) GetRoute(destination []byte, amountMsat uint64) *Route {
 	return result
 }
 
-func (n *LndNode) PayViaRoute(amountMsat uint64, paymentHash []byte, paymentSecret []byte, route *Route, timeout time.Time) *PayResult {
+func (n *LndNode) PayViaRoute(amountMsat uint64, paymentHash []byte, paymentSecret []byte, route *Route) *PayResult {
 	r := &lnd.Route{}
 
 	for _, hop := range route.Hops {
@@ -540,26 +538,23 @@ func (n *LndNode) TearDown() error {
 	return n.cmd.Process.Signal(os.Interrupt)
 }
 
-func waitServerActive(h *TestHarness, conn grpc.ClientConnInterface, timeout time.Time, name string) {
+func waitServerActive(h *TestHarness, conn grpc.ClientConnInterface, name string) {
 	log.Printf("%s: Waiting for LND rpc to be fully active.", name)
-	waitServerState(h, conn, timeout, name, func(s lnd.WalletState) bool {
+	waitServerState(h, conn, name, func(s lnd.WalletState) bool {
 		return s == lnd.WalletState_SERVER_ACTIVE
 	})
 }
 
-func waitServerStarted(h *TestHarness, conn grpc.ClientConnInterface, timeout time.Time, name string) {
+func waitServerStarted(h *TestHarness, conn grpc.ClientConnInterface, name string) {
 	log.Printf("%s: Waiting for LND rpc to start.", name)
-	waitServerState(h, conn, timeout, name, func(s lnd.WalletState) bool {
+	waitServerState(h, conn, name, func(s lnd.WalletState) bool {
 		return s != lnd.WalletState_WAITING_TO_START
 	})
 }
 
-func waitServerState(h *TestHarness, conn grpc.ClientConnInterface, timeout time.Time, name string, pred func(s lnd.WalletState) bool) {
-	ctx, cancel := context.WithTimeout(h.Ctx, time.Until(timeout))
-	defer cancel()
-
+func waitServerState(h *TestHarness, conn grpc.ClientConnInterface, name string, pred func(s lnd.WalletState) bool) {
 	state := lnd.NewStateClient(conn)
-	client, err := state.SubscribeState(ctx, &lnd.SubscribeStateRequest{})
+	client, err := state.SubscribeState(h.Ctx, &lnd.SubscribeStateRequest{})
 	CheckError(h.T, err)
 
 	errChan := make(chan error, 1)
@@ -589,23 +584,20 @@ func waitServerState(h *TestHarness, conn grpc.ClientConnInterface, timeout time
 		case <-done:
 			return
 
-		case <-time.After(time.Until(timeout)):
+		case <-time.After(time.Until(h.Deadline())):
 			h.T.Fatalf("%s: timeout waiting for LND to start. last error: %v", name, lastErr)
 		}
 	}
 }
 
-func initWallet(h *TestHarness, conn grpc.ClientConnInterface, timeout time.Time, name string) []byte {
-	ctx, cancel := context.WithTimeout(h.Ctx, time.Until(timeout))
-	defer cancel()
-
+func initWallet(h *TestHarness, conn grpc.ClientConnInterface, name string) []byte {
 	log.Printf("%s: Initializing LND wallet.", name)
 	c := lnd.NewWalletUnlockerClient(conn)
-	seed, err := c.GenSeed(ctx, &lnd.GenSeedRequest{})
+	seed, err := c.GenSeed(h.Ctx, &lnd.GenSeedRequest{})
 	CheckError(h.T, err)
 
 	pw := []byte("super-secret-password")
-	resp, err := c.InitWallet(ctx, &lnd.InitWalletRequest{
+	resp, err := c.InitWallet(h.Ctx, &lnd.InitWalletRequest{
 		WalletPassword:     pw,
 		CipherSeedMnemonic: seed.CipherSeedMnemonic,
 	})

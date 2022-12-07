@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"testing"
 	"time"
 
 	"github.com/breez/lntest/cln"
@@ -38,7 +37,7 @@ type CoreLightningNode struct {
 	grpcPort uint32
 }
 
-func NewCoreLightningNode(h *TestHarness, m *Miner, name string, timeout time.Time, extraArgs ...string) *CoreLightningNode {
+func NewCoreLightningNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *CoreLightningNode {
 	lightningdDir := h.GetDirectory(fmt.Sprintf("ld-%s", name))
 	host := "localhost"
 	port, err := GetPort()
@@ -107,7 +106,7 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, timeout time.Ti
 	}()
 
 	regtestDir := filepath.Join(lightningdDir, "regtest")
-	waitForLog(h.T, filepath.Join(regtestDir, "log"), "Server started with public key", timeout)
+	waitForLog(h, filepath.Join(regtestDir, "log"), "Server started with public key")
 
 	pemServerCA, err := os.ReadFile(filepath.Join(regtestDir, "ca.pem"))
 	CheckError(h.T, err)
@@ -157,9 +156,9 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, timeout time.Ti
 	return node
 }
 
-func waitForLog(t *testing.T, logfilePath string, phrase string, timeout time.Time) {
+func waitForLog(h *TestHarness, logfilePath string, phrase string) {
 	// at startup we need to wait for the file to open
-	for time.Now().Before(timeout) {
+	for time.Now().Before(h.Deadline()) {
 		if _, err := os.Stat(logfilePath); os.IsNotExist(err) {
 			time.Sleep(waitSleepInterval)
 			continue
@@ -170,23 +169,23 @@ func waitForLog(t *testing.T, logfilePath string, phrase string, timeout time.Ti
 	defer logfile.Close()
 
 	reader := bufio.NewReader(logfile)
-	for time.Now().Before(timeout) {
+	for time.Now().Before(h.Deadline()) {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
 				time.Sleep(waitSleepInterval)
 			} else {
-				CheckError(t, err)
+				CheckError(h.T, err)
 			}
 		}
 		m, err := regexp.MatchString(phrase, line)
-		CheckError(t, err)
+		CheckError(h.T, err)
 		if m {
 			return
 		}
 	}
 
-	t.Fatalf("Unable to find \"%s\" in %s", phrase, logfilePath)
+	h.T.Fatalf("Unable to find \"%s\" in %s", phrase, logfilePath)
 }
 
 func (n *CoreLightningNode) NodeId() []byte {
@@ -205,7 +204,7 @@ func (n *CoreLightningNode) PrivateKey() []byte {
 	return n.nodeId
 }
 
-func (n *CoreLightningNode) WaitForSync(timeout time.Time) {
+func (n *CoreLightningNode) WaitForSync() {
 	for {
 		info, _ := n.rpc.Getinfo(n.harness.Ctx, &cln.GetinfoRequest{})
 
@@ -224,7 +223,7 @@ func (n *CoreLightningNode) WaitForSync(timeout time.Time) {
 			info.Blockheight,
 		)
 
-		if time.Now().After(timeout) {
+		if time.Now().After(n.harness.Deadline()) {
 			n.harness.T.Fatal("timed out waiting for channel normal")
 		}
 
@@ -232,7 +231,7 @@ func (n *CoreLightningNode) WaitForSync(timeout time.Time) {
 	}
 }
 
-func (n *CoreLightningNode) Fund(amountSat uint64, timeout time.Time) {
+func (n *CoreLightningNode) Fund(amountSat uint64) {
 	addrResponse, err := n.rpc.NewAddr(
 		context.Background(),
 		&cln.NewaddrRequest{
@@ -242,7 +241,7 @@ func (n *CoreLightningNode) Fund(amountSat uint64, timeout time.Time) {
 	CheckError(n.harness.T, err)
 
 	n.miner.SendToAddress(*addrResponse.Bech32, amountSat)
-	n.WaitForSync(timeout)
+	n.WaitForSync()
 }
 
 func (n *CoreLightningNode) ConnectPeer(peer LightningNode) {
@@ -282,7 +281,7 @@ func (n *CoreLightningNode) OpenChannel(peer LightningNode, options *OpenChannel
 	}
 }
 
-func (n *CoreLightningNode) WaitForChannelReady(channel *ChannelInfo, timeout time.Time) ShortChannelID {
+func (n *CoreLightningNode) WaitForChannelReady(channel *ChannelInfo) ShortChannelID {
 	peerId := channel.GetPeer(n).NodeId()
 
 	for {
@@ -312,7 +311,7 @@ func (n *CoreLightningNode) WaitForChannelReady(channel *ChannelInfo, timeout ti
 			peerChannel := peer.Channels[channelIndex]
 			if peerChannel.State == cln.ListpeersPeersChannels_CHANNELD_AWAITING_LOCKIN {
 				n.miner.MineBlocks(6)
-				n.WaitForSync(timeout)
+				n.WaitForSync()
 				continue
 			}
 
@@ -330,7 +329,7 @@ func (n *CoreLightningNode) WaitForChannelReady(channel *ChannelInfo, timeout ti
 			}
 		}
 
-		if time.Now().After(timeout) {
+		if time.Now().After(n.harness.Deadline()) {
 			n.harness.T.Fatal("timed out waiting for channel normal")
 		}
 
@@ -339,7 +338,11 @@ func (n *CoreLightningNode) WaitForChannelReady(channel *ChannelInfo, timeout ti
 }
 
 func (n *CoreLightningNode) CreateBolt11Invoice(options *CreateInvoiceOptions) *CreateInvoiceResult {
+	label, err := GenerateRandomString()
+	CheckError(n.harness.T, err)
+
 	req := &cln.InvoiceRequest{
+		Label: label,
 		AmountMsat: &cln.AmountOrAny{
 			Value: &cln.AmountOrAny_Amount{
 				Amount: &cln.Amount{
@@ -376,8 +379,8 @@ func (n *CoreLightningNode) SignMessage(message []byte) []byte {
 	return resp.Signature
 }
 
-func (n *CoreLightningNode) Pay(bolt11 string, timeout time.Time) *PayResult {
-	rpcTimeout := getTimeoutSeconds(n.harness.T, timeout)
+func (n *CoreLightningNode) Pay(bolt11 string) *PayResult {
+	rpcTimeout := getTimeoutSeconds(n.harness.T, n.harness.Deadline())
 	resp, err := n.rpc.Pay(n.harness.Ctx, &cln.PayRequest{
 		Bolt11:   bolt11,
 		RetryFor: &rpcTimeout,
@@ -446,9 +449,9 @@ func (n *CoreLightningNode) PayViaRoute(
 	paymentHash []byte,
 	paymentSecret []byte,
 	route *Route,
-	timeout time.Time) *PayResult {
+) *PayResult {
 	resp := n.startPayViaRoute(amountMsat, paymentHash, paymentSecret, route)
-	t := getTimeoutSeconds(n.harness.T, timeout)
+	t := getTimeoutSeconds(n.harness.T, n.harness.Deadline())
 	w, err := n.rpc.WaitSendPay(n.harness.Ctx, &cln.WaitsendpayRequest{
 		PaymentHash: resp.PaymentHash,
 		Timeout:     &t,
