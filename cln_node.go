@@ -3,7 +3,6 @@ package lntest
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -233,7 +232,7 @@ func (n *CoreLightningNode) WaitForSync() {
 
 func (n *CoreLightningNode) Fund(amountSat uint64) {
 	addrResponse, err := n.rpc.NewAddr(
-		context.Background(),
+		n.harness.Ctx,
 		&cln.NewaddrRequest{
 			Addresstype: cln.NewaddrRequest_BECH32.Enum(),
 		},
@@ -282,6 +281,7 @@ func (n *CoreLightningNode) OpenChannel(peer LightningNode, options *OpenChannel
 }
 
 func (n *CoreLightningNode) WaitForChannelReady(channel *ChannelInfo) ShortChannelID {
+	log.Printf("%s: Wait for channel ready.", n.name)
 	peerId := channel.GetPeer(n).NodeId()
 
 	for {
@@ -310,9 +310,9 @@ func (n *CoreLightningNode) WaitForChannelReady(channel *ChannelInfo) ShortChann
 		if channelIndex >= 0 {
 			peerChannel := peer.Channels[channelIndex]
 			if peerChannel.State == cln.ListpeersPeersChannels_CHANNELD_AWAITING_LOCKIN {
+				log.Printf("%s: Channel state is CHANNELD_AWAITING_LOCKIN, mining some blocks.", n.name)
 				n.miner.MineBlocks(6)
 				n.WaitForSync()
-				continue
 			}
 
 			if peerChannel.State == cln.ListpeersPeersChannels_CHANNELD_NORMAL {
@@ -324,6 +324,7 @@ func (n *CoreLightningNode) WaitForChannelReady(channel *ChannelInfo) ShortChann
 				// Wait for the channel to end up in the listchannels response.
 				if len(channelsResp.Channels) > 0 &&
 					channelsResp.Channels[0].Active {
+					log.Printf("%s: Channel active with chan id: %s", n.name, channelsResp.Channels[0].ShortChannelId)
 					return NewShortChanIDFromString(channelsResp.Channels[0].ShortChannelId)
 				}
 			}
