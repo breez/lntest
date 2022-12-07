@@ -65,6 +65,7 @@ func NewTestHarness(t *testing.T, deadline time.Time, options ...HarnessOption) 
 		T:             t,
 		Ctx:           ctx,
 		cancel:        cancel,
+		deadline:      deadline,
 		Dir:           testDir,
 		dumpLogs:      slices.Contains(options, DumpLogs),
 		preserveLogs:  slices.Contains(options, PreserveLogs) || GetPreserveLogs(),
