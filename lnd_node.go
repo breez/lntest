@@ -13,6 +13,11 @@ import (
 	"time"
 
 	"github.com/breez/lntest/lnd"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil/hdkeychain"
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/lightningnetwork/lnd/aezeed"
 	"golang.org/x/exp/slices"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -33,12 +38,13 @@ type LndNode struct {
 	tlsCert  []byte
 	macaroon []byte
 	logFile  *os.File
+	privkey  *secp256k1.PrivateKey
 }
 
 func NewLndNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *LndNode {
 	lndDir := h.GetDirectory(fmt.Sprintf("lnd-%s", name))
 	log.Printf("%s: Creating LND node in dir %s", name, lndDir)
-	host := "localhost"
+	host := "127.0.0.1"
 	port, err := GetPort()
 	CheckError(h.T, err)
 
@@ -128,7 +134,7 @@ func NewLndNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *Lnd
 	defer tmpConn.Close()
 
 	waitServerStarted(h, tmpConn, name)
-	mac := initWallet(h, tmpConn, name)
+	mac, priv, _ := initWallet(h, tmpConn, name)
 	waitServerActive(h, tmpConn, name)
 
 	macCred := NewMacaroonCredential(mac)
@@ -171,6 +177,7 @@ func NewLndNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *Lnd
 		tlsCert:  tlsCert,
 		macaroon: mac,
 		logFile:  logFile,
+		privkey:  priv,
 	}
 
 	h.AddStoppable(node)
@@ -192,8 +199,8 @@ func (n *LndNode) Port() uint32 {
 	return n.port
 }
 
-func (n *LndNode) PrivateKey() []byte {
-	return n.nodeId
+func (n *LndNode) PrivateKey() *secp256k1.PrivateKey {
+	return n.privkey
 }
 
 func (n *LndNode) TlsCert() []byte {
@@ -611,9 +618,10 @@ func waitServerState(h *TestHarness, conn grpc.ClientConnInterface, name string,
 	}
 }
 
-func initWallet(h *TestHarness, conn grpc.ClientConnInterface, name string) []byte {
+func initWallet(h *TestHarness, conn grpc.ClientConnInterface, name string) ([]byte, *secp256k1.PrivateKey, *btcec.PublicKey) {
 	log.Printf("%s: Initializing LND wallet.", name)
 	c := lnd.NewWalletUnlockerClient(conn)
+
 	seed, err := c.GenSeed(h.Ctx, &lnd.GenSeedRequest{})
 	CheckError(h.T, err)
 
@@ -624,5 +632,32 @@ func initWallet(h *TestHarness, conn grpc.ClientConnInterface, name string) []by
 	})
 	CheckError(h.T, err)
 
-	return resp.AdminMacaroon
+	var mnemonic aezeed.Mnemonic
+	copy(mnemonic[:], seed.CipherSeedMnemonic)
+
+	cipherSeed, err := mnemonic.ToCipherSeed(nil)
+	CheckError(h.T, err)
+
+	rootKey, err := hdkeychain.NewMaster(
+		cipherSeed.Entropy[:],
+		&chaincfg.RegressionNetParams,
+	)
+	CheckError(h.T, err)
+
+	// node identity derication path = "m/1017'/1'/6'/0/0"
+	k, err := rootKey.DeriveNonStandard(1017 + 2147483648)
+	CheckError(h.T, err)
+	k, err = k.DeriveNonStandard(1 + 2147483648)
+	CheckError(h.T, err)
+	k, err = k.DeriveNonStandard(6 + 2147483648)
+	CheckError(h.T, err)
+	k, err = k.DeriveNonStandard(0)
+	CheckError(h.T, err)
+	nodeKey, err := k.DeriveNonStandard(0)
+	CheckError(h.T, err)
+	privKey, err := nodeKey.ECPrivKey()
+	CheckError(h.T, err)
+	pubKey, err := nodeKey.ECPubKey()
+	CheckError(h.T, err)
+	return resp.AdminMacaroon, privKey, pubKey
 }

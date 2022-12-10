@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/breez/lntest/cln"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"golang.org/x/exp/slices"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -34,6 +36,7 @@ type CoreLightningNode struct {
 	port     uint32
 	grpcHost string
 	grpcPort uint32
+	privkey  *secp256k1.PrivateKey
 }
 
 func NewCoreLightningNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *CoreLightningNode {
@@ -51,6 +54,10 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, extraArgs ...st
 	bitcoinCliBinary, err := GetBitcoinCliBinary()
 	CheckError(h.T, err)
 
+	privKey, err := btcec.NewPrivateKey()
+	CheckError(h.T, err)
+
+	s := privKey.Serialize()
 	args := []string{
 		"--network=regtest",
 		"--log-file=log",
@@ -60,6 +67,7 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, extraArgs ...st
 		"--allow-deprecated-apis=false",
 		"--dev-bitcoind-poll=1",
 		"--dev-fast-gossip",
+		fmt.Sprintf("--dev-force-privkey=%x", s),
 		fmt.Sprintf("--lightning-dir=%s", lightningdDir),
 		fmt.Sprintf("--bitcoin-datadir=%s", m.dir),
 		fmt.Sprintf("--addr=%s:%d", host, port),
@@ -147,6 +155,7 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, extraArgs ...st
 		host:     host,
 		grpcHost: host,
 		grpcPort: grpcPort,
+		privkey:  privKey,
 	}
 
 	h.AddStoppable(node)
@@ -199,8 +208,8 @@ func (n *CoreLightningNode) Port() uint32 {
 	return n.port
 }
 
-func (n *CoreLightningNode) PrivateKey() []byte {
-	return n.nodeId
+func (n *CoreLightningNode) PrivateKey() *secp256k1.PrivateKey {
+	return n.privkey
 }
 
 func (n *CoreLightningNode) WaitForSync() {

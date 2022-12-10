@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 )
 
 type LightningNode interface {
@@ -11,7 +13,7 @@ type LightningNode interface {
 	Host() string
 	Port() uint32
 	TearDown() error
-	PrivateKey() []byte
+	PrivateKey() *secp256k1.PrivateKey
 
 	WaitForSync()
 	Fund(amountSat uint64)
