@@ -419,6 +419,32 @@ func (n *CoreLightningNode) GetRoute(destination []byte, amountMsat uint64) *Rou
 	return result
 }
 
+func (n *CoreLightningNode) GetChannels() []*ChannelDetails {
+	peers, err := n.rpc.ListPeers(n.harness.Ctx, &cln.ListpeersRequest{})
+	CheckError(n.harness.T, err)
+
+	var result []*ChannelDetails
+	for _, p := range peers.Peers {
+		for _, c := range p.Channels {
+			var s ShortChannelID = NewShortChanIDFromInt(0)
+			if c.ShortChannelId != nil {
+				s = NewShortChanIDFromString(*c.ShortChannelId)
+			}
+			result = append(result, &ChannelDetails{
+				PeerId:              p.Id,
+				ShortChannelID:      s,
+				CapacityMsat:        c.TotalMsat.Msat,
+				LocalReserveMsat:    c.OurReserveMsat.Msat,
+				RemoteReserveMsat:   c.TheirReserveMsat.Msat,
+				LocalSpendableMsat:  c.SpendableMsat.Msat,
+				RemoteSpendableMsat: c.ReceivableMsat.Msat,
+			})
+		}
+	}
+
+	return result
+}
+
 func (n *CoreLightningNode) startPayViaRoute(amountMsat uint64, paymentHash []byte, paymentSecret []byte, route *Route) *cln.SendpayResponse {
 	var sendPayRoute []*cln.SendpayRoute
 	for _, hop := range route.Hops {

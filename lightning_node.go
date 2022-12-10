@@ -30,6 +30,7 @@ type LightningNode interface {
 	GetInvoice(paymentHash []byte) *GetInvoiceResponse
 	GetPeerFeatures(peerId []byte) map[uint32]string
 	GetRemoteNodeFeatures(nodeId []byte) map[uint32]string
+	GetChannels() []*ChannelDetails
 }
 
 type OpenChannelOptions struct {
@@ -137,4 +138,14 @@ func (c ShortChannelID) ToUint64() uint64 {
 
 func (c ShortChannelID) String() string {
 	return fmt.Sprintf("%dx%dx%d", c.BlockHeight, c.TxIndex, c.OutputIndex)
+}
+
+type ChannelDetails struct {
+	PeerId              []byte
+	ShortChannelID      ShortChannelID
+	CapacityMsat        uint64
+	LocalReserveMsat    uint64
+	RemoteReserveMsat   uint64
+	LocalSpendableMsat  uint64
+	RemoteSpendableMsat uint64
 }

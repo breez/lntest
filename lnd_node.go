@@ -517,6 +517,27 @@ func (n *LndNode) GetRemoteNodeFeatures(nodeId []byte) map[uint32]string {
 	return r
 }
 
+func (n *LndNode) GetChannels() []*ChannelDetails {
+	channels, err := n.rpc.ListChannels(n.harness.Ctx, &lnd.ListChannelsRequest{})
+	CheckError(n.harness.T, err)
+
+	var result []*ChannelDetails
+	for _, c := range channels.Channels {
+		p, _ := hex.DecodeString(c.RemotePubkey)
+		result = append(result, &ChannelDetails{
+			PeerId:              p,
+			ShortChannelID:      NewShortChanIDFromInt(c.ChanId),
+			CapacityMsat:        uint64(c.Capacity) * 1000,
+			LocalReserveMsat:    c.LocalConstraints.ChanReserveSat * 1000,
+			RemoteReserveMsat:   c.RemoteConstraints.ChanReserveSat * 1000,
+			LocalSpendableMsat:  uint64(c.LocalBalance) - c.LocalConstraints.ChanReserveSat*1000,
+			RemoteSpendableMsat: uint64(c.RemoteBalance) - c.RemoteConstraints.ChanReserveSat*1000,
+		})
+	}
+
+	return result
+}
+
 func (n *LndNode) TearDown() error {
 	if n.logFile != nil {
 		err := n.logFile.Close()
