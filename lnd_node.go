@@ -30,6 +30,7 @@ type LndNode struct {
 	miner    *Miner
 	cmd      *exec.Cmd
 	dir      string
+	conn     *grpc.ClientConn
 	rpc      lnd.LightningClient
 	host     string
 	port     uint32
@@ -118,7 +119,7 @@ func NewLndNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *Lnd
 			h.T.Fatalf("%s: tls.cert not created before timeout", name)
 		}
 
-		log.Printf("%s: Waiting for tls cert to appear. error: %v", name, err)
+		log.Printf("%s: Waiting for tls cert to appear. %v", name, err)
 		time.Sleep(50 * time.Millisecond)
 	}
 
@@ -170,6 +171,7 @@ func NewLndNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *Lnd
 		cmd:      cmd,
 		dir:      lndDir,
 		rpc:      client,
+		conn:     conn,
 		port:     port,
 		host:     host,
 		grpcHost: host,
@@ -545,11 +547,26 @@ func (n *LndNode) GetChannels() []*ChannelDetails {
 	return result
 }
 
+func (n *LndNode) Conn() grpc.ClientConnInterface {
+	return n.conn
+}
+
+func (n *LndNode) LightningClient() lnd.LightningClient {
+	return n.rpc
+}
+
 func (n *LndNode) TearDown() error {
 	if n.logFile != nil {
 		err := n.logFile.Close()
 		if err != nil {
 			log.Printf("error closing logfile: %v", err)
+		}
+	}
+
+	if n.conn != nil {
+		err := n.conn.Close()
+		if err != nil {
+			log.Printf("error closing client connection: %v", err)
 		}
 	}
 

@@ -32,6 +32,7 @@ type CoreLightningNode struct {
 	cmd      *exec.Cmd
 	dir      string
 	rpc      cln.NodeClient
+	conn     *grpc.ClientConn
 	host     string
 	port     uint32
 	grpcHost string
@@ -150,6 +151,7 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, extraArgs ...st
 		miner:    m,
 		cmd:      cmd,
 		dir:      lightningdDir,
+		conn:     conn,
 		rpc:      client,
 		port:     port,
 		host:     host,
@@ -573,6 +575,13 @@ func (n *CoreLightningNode) mapFeatures(f []byte) map[uint32]string {
 }
 
 func (n *CoreLightningNode) TearDown() error {
+	if n.conn != nil {
+		err := n.conn.Close()
+		if err != nil {
+			log.Printf("Error closing client conn: %v", err)
+		}
+	}
+
 	if n.cmd == nil || n.cmd.Process == nil {
 		// return if not properly initialized
 		// or error starting the process
