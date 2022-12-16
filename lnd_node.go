@@ -559,7 +559,7 @@ func (n *LndNode) GetRoute(destination []byte, amountMsat uint64) *Route {
 	return result
 }
 
-func (n *LndNode) PayViaRoute(amountMsat uint64, paymentHash []byte, paymentSecret []byte, route *Route) *PayResult {
+func (n *LndNode) PayViaRoute(amountMsat uint64, paymentHash []byte, paymentSecret []byte, route *Route) (*PayResult, error) {
 	r := &lnd.Route{}
 
 	for _, hop := range route.Hops {
@@ -581,11 +581,15 @@ func (n *LndNode) PayViaRoute(amountMsat uint64, paymentHash []byte, paymentSecr
 		PaymentHash: paymentHash,
 		Route:       r,
 	})
-	CheckError(n.harness.T, err)
+	if err != nil {
+		return nil, err
+	}
 
 	lastHop := resp.PaymentRoute.Hops[len(resp.PaymentRoute.Hops)-1]
 	dest, err := hex.DecodeString(lastHop.PubKey)
-	CheckError(n.harness.T, err)
+	if err != nil {
+		return nil, err
+	}
 
 	return &PayResult{
 		PaymentHash:     resp.PaymentHash,
@@ -593,7 +597,7 @@ func (n *LndNode) PayViaRoute(amountMsat uint64, paymentHash []byte, paymentSecr
 		Destination:     dest,
 		AmountSentMsat:  uint64(resp.PaymentRoute.TotalAmtMsat),
 		PaymentPreimage: resp.PaymentPreimage,
-	}
+	}, nil
 }
 
 func (n *LndNode) GetInvoice(paymentHash []byte) *GetInvoiceResponse {

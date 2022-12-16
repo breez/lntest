@@ -556,7 +556,7 @@ func (n *ClnNode) GetChannels() []*ChannelDetails {
 	return result
 }
 
-func (n *ClnNode) startPayViaRoute(amountMsat uint64, paymentHash []byte, paymentSecret []byte, route *Route) *cln.SendpayResponse {
+func (n *ClnNode) startPayViaRoute(amountMsat uint64, paymentHash []byte, paymentSecret []byte, route *Route) (*cln.SendpayResponse, error) {
 	var sendPayRoute []*cln.SendpayRoute
 	for _, hop := range route.Hops {
 		sendPayRoute = append(sendPayRoute, &cln.SendpayRoute{
@@ -577,9 +577,8 @@ func (n *ClnNode) startPayViaRoute(amountMsat uint64, paymentHash []byte, paymen
 		},
 		PaymentSecret: paymentSecret,
 	})
-	CheckError(n.harness.T, err)
 
-	return resp
+	return resp, err
 }
 
 func (n *ClnNode) PayViaRoute(
@@ -587,8 +586,12 @@ func (n *ClnNode) PayViaRoute(
 	paymentHash []byte,
 	paymentSecret []byte,
 	route *Route,
-) *PayResult {
-	resp := n.startPayViaRoute(amountMsat, paymentHash, paymentSecret, route)
+) (*PayResult, error) {
+	resp, err := n.startPayViaRoute(amountMsat, paymentHash, paymentSecret, route)
+	if err != nil {
+		return nil, err
+	}
+
 	t := getTimeoutSeconds(n.harness.T, n.harness.Deadline())
 	w, err := n.runtime.rpc.WaitSendPay(n.harness.Ctx, &cln.WaitsendpayRequest{
 		PaymentHash: resp.PaymentHash,
@@ -596,7 +599,9 @@ func (n *ClnNode) PayViaRoute(
 		Partid:      resp.Partid,
 		Groupid:     resp.Groupid,
 	})
-	CheckError(n.harness.T, err)
+	if err != nil {
+		return nil, err
+	}
 
 	return &PayResult{
 		PaymentHash:     w.PaymentHash,
@@ -604,7 +609,7 @@ func (n *ClnNode) PayViaRoute(
 		Destination:     w.Destination,
 		AmountSentMsat:  w.AmountSentMsat.Msat,
 		PaymentPreimage: w.PaymentPreimage,
-	}
+	}, nil
 }
 
 func (n *ClnNode) GetInvoice(paymentHash []byte) *GetInvoiceResponse {

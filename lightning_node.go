@@ -30,7 +30,7 @@ type LightningNode interface {
 		amountMsat uint64,
 		paymentHash []byte,
 		paymentSecret []byte,
-		route *Route) *PayResult
+		route *Route) (*PayResult, error)
 	GetInvoice(paymentHash []byte) *GetInvoiceResponse
 	GetPeerFeatures(peerId []byte) map[uint32]string
 	GetRemoteNodeFeatures(nodeId []byte) map[uint32]string
