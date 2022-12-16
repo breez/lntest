@@ -8,23 +8,40 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync"
 
 	"github.com/niftynei/glightning/gbitcoin"
 )
 
 type Miner struct {
 	harness         *TestHarness
+	binary          string
+	args            []string
 	dir             string
-	rpc             *gbitcoin.Bitcoin
 	rpcPort         uint32
 	rpcUser         string
 	rpcPass         string
-	cmd             *exec.Cmd
 	zmqBlockAddress string
 	zmqTxAddress    string
+	isInitialized   bool
+	runtime         *minerRuntime
+	mtx             sync.Mutex
+}
+
+type minerRuntime struct {
+	rpc      *gbitcoin.Bitcoin
+	cmd      *exec.Cmd
+	cleanups []*Cleanup
 }
 
 func NewMiner(h *TestHarness) *Miner {
+	binary, err := GetBitcoindBinary()
+	CheckError(h.T, err)
+
+	return NewMinerFromBinary(h, binary)
+}
+
+func NewMinerFromBinary(h *TestHarness, binary string) *Miner {
 	btcUser := "btcuser"
 	btcPass := "btcpass"
 	bitcoindDir := h.GetDirectory("miner")
@@ -35,9 +52,6 @@ func NewMiner(h *TestHarness) *Miner {
 	CheckError(h.T, err)
 
 	zmqTxPort, err := GetPort()
-	CheckError(h.T, err)
-
-	binary, err := GetBitcoindBinary()
 	CheckError(h.T, err)
 
 	host := "127.0.0.1"
@@ -59,44 +73,11 @@ func NewMiner(h *TestHarness) *Miner {
 		fmt.Sprintf("-zmqpubrawtx=%s", zmqTxAddress),
 	}
 
-	log.Printf("starting %s on rpc port %d in dir %s...", binary, rpcPort, bitcoindDir)
-	cmd := exec.CommandContext(h.Ctx, binary, args...)
-
-	err = cmd.Start()
-	CheckError(h.T, err)
-	log.Printf("miner: bitcoind started (%d)!", cmd.Process.Pid)
-
-	rpc := gbitcoin.NewBitcoin(btcUser, btcPass)
-	rpc.SetTimeout(uint(2))
-
-	log.Printf("miner: Starting up bitcoin client")
-	rpc.StartUp("http://localhost", bitcoindDir, uint(rpcPort))
-
-	l := true
-	d := false
-	_, err = rpc.CreateWallet(&gbitcoin.CreateWalletRequest{
-		WalletName:    "default",
-		LoadOnStartup: &l,
-		Descriptors:   &d,
-	})
-	if err != nil {
-		log.Printf("miner: Create wallet failed. Ignoring error: %v", err)
-	}
-
-	// Go ahead and run 101 blocks
-	log.Printf("Get new address")
-	addr, err := rpc.GetNewAddress(gbitcoin.Bech32)
-	CheckError(h.T, err)
-
-	log.Printf("Generate to address")
-	_, err = rpc.GenerateToAddress(addr, 101)
-	CheckError(h.T, err)
-
 	miner := &Miner{
 		harness:         h,
+		binary:          binary,
+		args:            args,
 		dir:             bitcoindDir,
-		cmd:             cmd,
-		rpc:             rpc,
 		rpcPort:         rpcPort,
 		rpcUser:         btcUser,
 		rpcPass:         btcPass,
@@ -109,6 +90,111 @@ func NewMiner(h *TestHarness) *Miner {
 	return miner
 }
 
+func (m *Miner) Start() {
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+
+	if m.runtime != nil {
+		log.Printf("miner: Start called, but was already started.")
+		return
+	}
+
+	var cleanups []*Cleanup
+	log.Printf("starting %s on rpc port %d in dir %s...", m.binary, m.rpcPort, m.dir)
+	cmd := exec.CommandContext(m.harness.Ctx, m.binary, m.args...)
+	err := cmd.Start()
+	CheckError(m.harness.T, err)
+	cleanups = append(cleanups, &Cleanup{
+		Name: "miner: cmd",
+		Fn: func() error {
+			proc := cmd.Process
+			if proc == nil {
+				return nil
+			}
+
+			sig := os.Interrupt
+			if runtime.GOOS == "windows" {
+				sig = os.Kill
+			}
+
+			err := proc.Signal(sig)
+			if err != nil {
+				log.Printf("miner: Error sending signal %v: %v", sig, err)
+			}
+			state, err := proc.Wait()
+			if err != nil {
+				log.Printf("miner: Error waiting for process to complete. State %v: %v", state, err)
+			}
+
+			return err
+		},
+	})
+	log.Printf("miner: bitcoind started (%d)!", cmd.Process.Pid)
+
+	rpc := gbitcoin.NewBitcoin(m.rpcUser, m.rpcPass)
+	rpc.SetTimeout(uint(2))
+
+	log.Printf("miner: Starting up bitcoin client")
+	rpc.StartUp("http://localhost", m.dir, uint(m.rpcPort))
+	m.runtime = &minerRuntime{
+		rpc:      rpc,
+		cmd:      cmd,
+		cleanups: cleanups,
+	}
+
+	if !m.isInitialized {
+		err = m.initializeFirstRun()
+		if err != nil {
+			m.runtime = nil
+			PerformCleanup(cleanups)
+			m.harness.Fatalf("Failed to initialize for first run: %v", err)
+		}
+	}
+}
+
+func (m *Miner) initializeFirstRun() error {
+	l := true
+	d := false
+	_, err := m.runtime.rpc.CreateWallet(&gbitcoin.CreateWalletRequest{
+		WalletName:    "default",
+		LoadOnStartup: &l,
+		Descriptors:   &d,
+	})
+	if err != nil {
+		log.Printf("miner: Create wallet failed. Ignoring error: %v", err)
+	}
+
+	// Go ahead and run 101 blocks
+	log.Printf("Get new address")
+	addr, err := m.runtime.rpc.GetNewAddress(gbitcoin.Bech32)
+	if err != nil {
+		return fmt.Errorf("failed to get new address: %v", err)
+	}
+
+	log.Printf("Generate to address")
+	_, err = m.runtime.rpc.GenerateToAddress(addr, 101)
+	if err != nil {
+		return fmt.Errorf("failed to generate to address: %v", err)
+	}
+
+	m.isInitialized = true
+	return nil
+}
+
+func (m *Miner) Stop() error {
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+
+	if m.runtime == nil {
+		log.Printf("miner: Stop called, but was already stopped.")
+		return nil
+	}
+
+	PerformCleanup(m.runtime.cleanups)
+	m.runtime = nil
+	return nil
+}
+
 func (m *Miner) ZmqBlockAddress() string {
 	return m.zmqBlockAddress
 }
@@ -118,9 +204,9 @@ func (m *Miner) ZmqTxAddress() string {
 }
 
 func (m *Miner) MineBlocks(n uint) {
-	addr, err := m.rpc.GetNewAddress(gbitcoin.Bech32)
+	addr, err := m.runtime.rpc.GetNewAddress(gbitcoin.Bech32)
 	CheckError(m.harness.T, err)
-	_, err = m.rpc.GenerateToAddress(addr, n)
+	_, err = m.runtime.rpc.GenerateToAddress(addr, n)
 	CheckError(m.harness.T, err)
 }
 
@@ -129,29 +215,14 @@ func (m *Miner) SendToAddress(addr string, amountSat uint64) {
 	amountSatRemainder := amountSat % 100000000
 	amountStr := strconv.FormatUint(amountBtc, 10) + "." + fmt.Sprintf("%08s", strconv.FormatUint(amountSatRemainder, 10))
 	log.Printf("miner: Sending %s btc to address %s", amountStr, addr)
-	_, err := m.rpc.SendToAddress(addr, amountStr)
+	_, err := m.runtime.rpc.SendToAddress(addr, amountStr)
 	CheckError(m.harness.T, err)
 
 	m.MineBlocks(1)
 }
 
 func (m *Miner) GetBlockHeight() uint32 {
-	info, err := m.rpc.GetChainInfo()
+	info, err := m.runtime.rpc.GetChainInfo()
 	CheckError(m.harness.T, err)
 	return info.Blocks
-}
-
-func (m *Miner) TearDown() error {
-	if m.cmd == nil || m.cmd.Process == nil {
-		// return if not properly initialized
-		// or error starting the process
-		return nil
-	}
-
-	defer m.cmd.Wait()
-	if runtime.GOOS == "windows" {
-		return m.cmd.Process.Signal(os.Kill)
-	}
-
-	return m.cmd.Process.Signal(os.Interrupt)
 }

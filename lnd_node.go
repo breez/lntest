@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/breez/lntest/lnd"
@@ -24,22 +25,34 @@ import (
 )
 
 type LndNode struct {
-	name     string
-	nodeId   []byte
-	harness  *TestHarness
-	miner    *Miner
+	name           string
+	binary         string
+	args           []string
+	nodeId         []byte
+	harness        *TestHarness
+	miner          *Miner
+	dir            string
+	host           string
+	port           uint32
+	grpcHost       string
+	grpcPort       uint32
+	grpcAddress    string
+	tlsCert        []byte
+	macaroon       []byte
+	privkey        *secp256k1.PrivateKey
+	walletPassword []byte
+	isInitialized  bool
+	logFilePath    string
+	runtime        *lndNodeRuntime
+	mtx            sync.Mutex
+}
+
+type lndNodeRuntime struct {
 	cmd      *exec.Cmd
-	dir      string
 	conn     *grpc.ClientConn
 	rpc      lnd.LightningClient
-	host     string
-	port     uint32
-	grpcHost string
-	grpcPort uint32
-	tlsCert  []byte
-	macaroon []byte
 	logFile  *os.File
-	privkey  *secp256k1.PrivateKey
+	cleanups []*Cleanup
 }
 
 func NewLndNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *LndNode {
@@ -64,7 +77,7 @@ func NewLndNodeFromBinary(h *TestHarness, m *Miner, name string, binary string, 
 
 	grpcAddress := fmt.Sprintf("%s:%d", host, grpcPort)
 	restAddress := fmt.Sprintf("%s:%d", host, restPort)
-	args := []string{
+	args := append([]string{
 		fmt.Sprintf("--lnddir=%s", lndDir),
 		"--debuglevel=debug",
 		"--nobootstrap",
@@ -83,82 +96,23 @@ func NewLndNodeFromBinary(h *TestHarness, m *Miner, name string, binary string, 
 		fmt.Sprintf("--bitcoind.zmqpubrawtx=%s", m.zmqTxAddress),
 		"--gossip.channel-update-interval=10ms",
 		"--db.batch-commit-interval=10ms",
-	}
+	}, extraArgs...)
 
-	cmd := exec.CommandContext(h.Ctx, binary, append(args, extraArgs...)...)
 	logFilePath := filepath.Join(lndDir, "lnd-stdouterr.log")
-	logFile, err := os.Create(logFilePath)
-	CheckError(h.T, err)
-
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	log.Printf("%s: starting %s on port %d in dir %s...", name, binary, port, lndDir)
-
-	err = cmd.Start()
-	CheckError(h.T, err)
-
-	go func() {
-		err := cmd.Wait()
-		if err != nil && err.Error() != "signal: interrupt" {
-			log.Printf("%s: lnd exited with error %s", name, err)
-		} else {
-			log.Printf("%s: process exited normally.", name)
-		}
-	}()
-
-	tlsCert, tlsCreds := waitForTlsCert(h, name, lndDir)
-	opts := []grpc.DialOption{
-		grpc.WithBlock(),
-		grpc.WithTransportCredentials(tlsCreds),
-	}
-
-	tmpConn, err := grpc.DialContext(h.Ctx, grpcAddress, opts...)
-	CheckError(h.T, err)
-	defer tmpConn.Close()
-
-	waitServerStarted(h, tmpConn, name)
-	mac, priv, _ := initWallet(h, tmpConn, name)
-	waitServerActive(h, tmpConn, name)
-
-	macCred := NewMacaroonCredential(mac)
-	opts = append(opts, grpc.WithPerRPCCredentials(macCred))
-
-	conn, err := grpc.DialContext(h.Ctx, grpcAddress, opts...)
-	CheckError(h.T, err)
-
-	client := lnd.NewLightningClient(conn)
-	info, err := client.GetInfo(h.Ctx, &lnd.GetInfoRequest{})
-	CheckError(h.T, err)
-
-	log.Printf("%s: Has node id %s", name, info.IdentityPubkey)
-
-	var features string
-	for i, f := range info.Features {
-		features += strconv.FormatUint(uint64(i), 10)
-		features += ":"
-		features += f.Name
-	}
-	log.Printf("%s: Has features: %s", name, features)
-	nodeId, err := hex.DecodeString(info.IdentityPubkey)
-	CheckError(h.T, err)
-
 	node := &LndNode{
-		name:     name,
-		nodeId:   nodeId,
-		harness:  h,
-		miner:    m,
-		cmd:      cmd,
-		dir:      lndDir,
-		rpc:      client,
-		conn:     conn,
-		port:     port,
-		host:     host,
-		grpcHost: host,
-		grpcPort: grpcPort,
-		tlsCert:  tlsCert,
-		macaroon: mac,
-		logFile:  logFile,
-		privkey:  priv,
+		name:           name,
+		binary:         binary,
+		args:           args,
+		harness:        h,
+		miner:          m,
+		dir:            lndDir,
+		port:           port,
+		host:           host,
+		grpcHost:       host,
+		grpcPort:       grpcPort,
+		grpcAddress:    grpcAddress,
+		logFilePath:    logFilePath,
+		walletPassword: []byte("super-secret-password"),
 	}
 
 	h.AddStoppable(node)
@@ -168,12 +122,171 @@ func NewLndNodeFromBinary(h *TestHarness, m *Miner, name string, binary string, 
 	return node
 }
 
-func waitForTlsCert(
-	h *TestHarness,
-	name string,
-	lndDir string,
-) ([]byte, credentials.TransportCredentials) {
-	tlsCertPath := filepath.Join(lndDir, "tls.cert")
+func (n *LndNode) Start() {
+	n.mtx.Lock()
+	defer n.mtx.Unlock()
+
+	if n.runtime != nil {
+		log.Printf("%s: Start called, but was already started.", n.name)
+		return
+	}
+
+	var cleanups []*Cleanup
+	cmd := exec.CommandContext(n.harness.Ctx, n.binary, n.args...)
+	logFile, err := os.OpenFile(
+		n.logFilePath,
+		os.O_RDWR|os.O_CREATE|os.O_APPEND,
+		0666,
+	)
+	CheckError(n.harness.T, err)
+	cleanups = append(cleanups, &Cleanup{
+		Name: fmt.Sprintf("%s: logfile", n.name),
+		Fn:   logFile.Close,
+	})
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	log.Printf("%s: starting %s on port %d in dir %s...", n.name, n.binary, n.port, n.dir)
+
+	err = cmd.Start()
+	if err != nil {
+		PerformCleanup(cleanups)
+		log.Fatalf("%s: Failed to start LND: %v", n.name, err)
+	}
+
+	cleanups = append(cleanups, &Cleanup{
+		Name: "cmd",
+		Fn: func() error {
+			proc := cmd.Process
+			if proc != nil {
+				if runtime.GOOS == "windows" {
+					return proc.Signal(os.Kill)
+				}
+
+				return proc.Signal(os.Interrupt)
+			}
+
+			return nil
+		},
+	})
+
+	go func() {
+		err := cmd.Wait()
+		if err != nil && err.Error() != "signal: interrupt" {
+			log.Printf("%s: lnd exited with error %s", n.name, err)
+		} else {
+			log.Printf("%s: process exited normally.", n.name)
+		}
+	}()
+
+	tlsCert, tlsCreds, err := n.waitForTlsCert()
+	if err != nil {
+		PerformCleanup(cleanups)
+		n.harness.T.Fatalf("%s: %v", n.name, err)
+	}
+	n.tlsCert = tlsCert
+
+	opts := []grpc.DialOption{
+		grpc.WithBlock(),
+		grpc.WithTransportCredentials(tlsCreds),
+	}
+
+	tmpConn, err := grpc.DialContext(n.harness.Ctx, n.grpcAddress, opts...)
+	if err != nil {
+		PerformCleanup(cleanups)
+		n.harness.T.Fatalf("%s: failed to create grpc connection: %v", n.name, err)
+	}
+	defer tmpConn.Close()
+
+	err = n.waitServerStarted(tmpConn)
+	if err != nil {
+		PerformCleanup(cleanups)
+		n.harness.T.Fatalf("%s: waitServerStarted: %v", n.name, err)
+	}
+
+	if n.isInitialized {
+		err = n.unlockWallet(tmpConn)
+		if err != nil {
+			PerformCleanup(cleanups)
+			n.harness.T.Fatalf("%s: unlockWallet: %v", n.name, err)
+		}
+	} else {
+		mac, priv, _, err := n.initWallet(tmpConn)
+		if err != nil {
+			PerformCleanup(cleanups)
+			n.harness.T.Fatalf("%s: initWallet: %v", n.name, err)
+		}
+		n.macaroon = mac
+		n.privkey = priv
+		n.isInitialized = true
+	}
+
+	err = n.waitServerActive(tmpConn)
+	if err != nil {
+		PerformCleanup(cleanups)
+		n.harness.T.Fatalf("%s: waitServerActive: %v", n.name, err)
+	}
+
+	macCred := NewMacaroonCredential(n.macaroon)
+	opts = append(opts, grpc.WithPerRPCCredentials(macCred))
+
+	conn, err := grpc.DialContext(n.harness.Ctx, n.grpcAddress, opts...)
+	if err != nil {
+		PerformCleanup(cleanups)
+		n.harness.T.Fatalf("%s: failed to create grpc connection: %v", n.name, err)
+	}
+	cleanups = append(cleanups, &Cleanup{
+		Name: fmt.Sprintf("%s: grpc conn", n.name),
+		Fn:   conn.Close,
+	})
+
+	client := lnd.NewLightningClient(conn)
+	info, err := client.GetInfo(n.harness.Ctx, &lnd.GetInfoRequest{})
+	if err != nil {
+		PerformCleanup(cleanups)
+		n.harness.T.Fatalf("%s: failed to call getinfo: %v", n.name, err)
+	}
+
+	log.Printf("%s: Has node id %s", n.name, info.IdentityPubkey)
+
+	var features string
+	for i, f := range info.Features {
+		features += strconv.FormatUint(uint64(i), 10)
+		features += ":"
+		features += f.Name
+	}
+	log.Printf("%s: Has features: %s", n.name, features)
+	nodeId, err := hex.DecodeString(info.IdentityPubkey)
+	if err != nil {
+		PerformCleanup(cleanups)
+		n.harness.T.Fatalf("%s: failed to decode node id '%s': %v", n.name, info.IdentityPubkey, err)
+	}
+
+	n.nodeId = nodeId
+	n.runtime = &lndNodeRuntime{
+		cmd:      cmd,
+		conn:     conn,
+		rpc:      client,
+		logFile:  logFile,
+		cleanups: cleanups,
+	}
+}
+
+func (n *LndNode) Stop() error {
+	n.mtx.Lock()
+	defer n.mtx.Unlock()
+
+	if n.runtime == nil {
+		log.Printf("%s: Stop called, but was already stopped.", n.name)
+		return nil
+	}
+
+	PerformCleanup(n.runtime.cleanups)
+	n.runtime = nil
+	return nil
+}
+
+func (n *LndNode) waitForTlsCert() ([]byte, credentials.TransportCredentials, error) {
+	tlsCertPath := filepath.Join(n.dir, "tls.cert")
 	var tlsCreds credentials.TransportCredentials
 	var err error
 	for {
@@ -186,20 +299,28 @@ func waitForTlsCert(
 			break
 		}
 
-		if time.Now().After(h.Deadline()) {
-			h.T.Fatalf("%s: tls.cert not created before timeout", name)
+		if time.Now().After(n.harness.Deadline()) {
+			return nil, nil, fmt.Errorf("tls.cert not created before timeout")
 		}
 
-		log.Printf("%s: Waiting for tls cert to appear. %v", name, err)
+		log.Printf("%s: Waiting for tls cert to appear. %v", n.name, err)
 		<-time.After(50 * time.Millisecond)
 	}
 
-	CheckError(h.T, err)
+	if err != nil {
+		return nil, nil, fmt.Errorf("hanging error after tls.cert appeared")
+	}
 
 	tlsCert, err := os.ReadFile(tlsCertPath)
-	CheckError(h.T, err)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read tls.cert file")
+	}
 
-	return tlsCert, tlsCreds
+	return tlsCert, tlsCreds, nil
+}
+
+func (n *LndNode) IsStarted() bool {
+	return n.runtime != nil
 }
 
 func (n *LndNode) NodeId() []byte {
@@ -232,7 +353,7 @@ func (n *LndNode) GrpcHost() string {
 
 func (n *LndNode) WaitForSync() {
 	for {
-		info, _ := n.rpc.GetInfo(n.harness.Ctx, &lnd.GetInfoRequest{})
+		info, _ := n.runtime.rpc.GetInfo(n.harness.Ctx, &lnd.GetInfoRequest{})
 
 		blockHeight := n.miner.GetBlockHeight()
 
@@ -257,7 +378,7 @@ func (n *LndNode) WaitForSync() {
 }
 
 func (n *LndNode) Fund(amountSat uint64) {
-	addrResponse, err := n.rpc.NewAddress(
+	addrResponse, err := n.runtime.rpc.NewAddress(
 		n.harness.Ctx,
 		&lnd.NewAddressRequest{
 			Type: lnd.AddressType_UNUSED_TAPROOT_PUBKEY,
@@ -270,7 +391,7 @@ func (n *LndNode) Fund(amountSat uint64) {
 }
 
 func (n *LndNode) ConnectPeer(peer LightningNode) {
-	_, err := n.rpc.ConnectPeer(n.harness.Ctx, &lnd.ConnectPeerRequest{
+	_, err := n.runtime.rpc.ConnectPeer(n.harness.Ctx, &lnd.ConnectPeerRequest{
 		Addr: &lnd.LightningAddress{
 			Pubkey: hex.EncodeToString(peer.NodeId()),
 			Host:   fmt.Sprintf("%s:%d", peer.Host(), peer.Port()),
@@ -283,7 +404,7 @@ func (n *LndNode) OpenChannel(peer LightningNode, options *OpenChannelOptions) *
 	n.ConnectPeer(peer)
 
 	// open a channel
-	fundResult, err := n.rpc.OpenChannelSync(n.harness.Ctx, &lnd.OpenChannelRequest{
+	fundResult, err := n.runtime.rpc.OpenChannelSync(n.harness.Ctx, &lnd.OpenChannelRequest{
 		NodePubkey:         peer.NodeId(),
 		LocalFundingAmount: int64(options.AmountSat),
 		Private:            false,
@@ -304,7 +425,7 @@ func (n *LndNode) WaitForChannelReady(channel *ChannelInfo) ShortChannelID {
 	txidStr := hex.EncodeToString(channel.FundingTxId)
 
 	for {
-		lc, err := n.rpc.ListChannels(n.harness.Ctx, &lnd.ListChannelsRequest{
+		lc, err := n.runtime.rpc.ListChannels(n.harness.Ctx, &lnd.ListChannelsRequest{
 			Peer: peerId,
 		})
 		CheckError(n.harness.T, err)
@@ -328,7 +449,7 @@ func (n *LndNode) WaitForChannelReady(channel *ChannelInfo) ShortChannelID {
 			log.Printf("%s: Waiting for channel to become active.", n.name)
 		} else {
 
-			pending, err := n.rpc.PendingChannels(n.harness.Ctx, &lnd.PendingChannelsRequest{})
+			pending, err := n.runtime.rpc.PendingChannels(n.harness.Ctx, &lnd.PendingChannelsRequest{})
 			CheckError(n.harness.T, err)
 
 			pendingIndex := slices.IndexFunc(pending.PendingOpenChannels, func(c *lnd.PendingChannelsResponse_PendingOpenChannel) bool {
@@ -369,7 +490,7 @@ func (n *LndNode) CreateBolt11Invoice(options *CreateInvoiceOptions) *CreateInvo
 		req.RPreimage = *options.Preimage
 	}
 
-	resp, err := n.rpc.AddInvoice(n.harness.Ctx, req)
+	resp, err := n.runtime.rpc.AddInvoice(n.harness.Ctx, req)
 	CheckError(n.harness.T, err)
 
 	return &CreateInvoiceResult{
@@ -380,7 +501,7 @@ func (n *LndNode) CreateBolt11Invoice(options *CreateInvoiceOptions) *CreateInvo
 }
 
 func (n *LndNode) SignMessage(message []byte) []byte {
-	resp, err := n.rpc.SignMessage(n.harness.Ctx, &lnd.SignMessageRequest{
+	resp, err := n.runtime.rpc.SignMessage(n.harness.Ctx, &lnd.SignMessageRequest{
 		Msg: message,
 	})
 	CheckError(n.harness.T, err)
@@ -392,7 +513,7 @@ func (n *LndNode) SignMessage(message []byte) []byte {
 }
 
 func (n *LndNode) Pay(bolt11 string) *PayResult {
-	resp, err := n.rpc.SendPaymentSync(n.harness.Ctx, &lnd.SendRequest{
+	resp, err := n.runtime.rpc.SendPaymentSync(n.harness.Ctx, &lnd.SendRequest{
 		PaymentRequest: bolt11,
 	})
 	CheckError(n.harness.T, err)
@@ -411,7 +532,7 @@ func (n *LndNode) Pay(bolt11 string) *PayResult {
 }
 
 func (n *LndNode) GetRoute(destination []byte, amountMsat uint64) *Route {
-	routes, err := n.rpc.QueryRoutes(n.harness.Ctx, &lnd.QueryRoutesRequest{
+	routes, err := n.runtime.rpc.QueryRoutes(n.harness.Ctx, &lnd.QueryRoutesRequest{
 		PubKey:  hex.EncodeToString(destination),
 		AmtMsat: int64(amountMsat),
 	})
@@ -456,7 +577,7 @@ func (n *LndNode) PayViaRoute(amountMsat uint64, paymentHash []byte, paymentSecr
 		PaymentAddr:  paymentSecret,
 	}
 
-	resp, err := n.rpc.SendToRouteSync(n.harness.Ctx, &lnd.SendToRouteRequest{
+	resp, err := n.runtime.rpc.SendToRouteSync(n.harness.Ctx, &lnd.SendToRouteRequest{
 		PaymentHash: paymentHash,
 		Route:       r,
 	})
@@ -476,7 +597,7 @@ func (n *LndNode) PayViaRoute(amountMsat uint64, paymentHash []byte, paymentSecr
 }
 
 func (n *LndNode) GetInvoice(paymentHash []byte) *GetInvoiceResponse {
-	resp, err := n.rpc.LookupInvoice(n.harness.Ctx, &lnd.PaymentHash{
+	resp, err := n.runtime.rpc.LookupInvoice(n.harness.Ctx, &lnd.PaymentHash{
 		RHash: paymentHash,
 	})
 	CheckError(n.harness.T, err)
@@ -504,7 +625,7 @@ func (n *LndNode) GetInvoice(paymentHash []byte) *GetInvoiceResponse {
 
 func (n *LndNode) GetPeerFeatures(peerId []byte) map[uint32]string {
 	pubkey := hex.EncodeToString(peerId)
-	resp, err := n.rpc.ListPeers(n.harness.Ctx, &lnd.ListPeersRequest{})
+	resp, err := n.runtime.rpc.ListPeers(n.harness.Ctx, &lnd.ListPeersRequest{})
 	CheckError(n.harness.T, err)
 
 	for _, p := range resp.Peers {
@@ -526,7 +647,7 @@ func (n *LndNode) mapFeatures(features map[uint32]*lnd.Feature) map[uint32]strin
 }
 
 func (n *LndNode) GetRemoteNodeFeatures(nodeId []byte) map[uint32]string {
-	resp, err := n.rpc.GetNodeInfo(n.harness.Ctx, &lnd.NodeInfoRequest{
+	resp, err := n.runtime.rpc.GetNodeInfo(n.harness.Ctx, &lnd.NodeInfoRequest{
 		PubKey: hex.EncodeToString(nodeId),
 	})
 	CheckError(n.harness.T, err)
@@ -540,7 +661,7 @@ func (n *LndNode) GetRemoteNodeFeatures(nodeId []byte) map[uint32]string {
 }
 
 func (n *LndNode) GetChannels() []*ChannelDetails {
-	channels, err := n.rpc.ListChannels(n.harness.Ctx, &lnd.ListChannelsRequest{})
+	channels, err := n.runtime.rpc.ListChannels(n.harness.Ctx, &lnd.ListChannelsRequest{})
 	CheckError(n.harness.T, err)
 
 	var result []*ChannelDetails
@@ -561,59 +682,33 @@ func (n *LndNode) GetChannels() []*ChannelDetails {
 }
 
 func (n *LndNode) Conn() grpc.ClientConnInterface {
-	return n.conn
+	return n.runtime.conn
 }
 
 func (n *LndNode) LightningClient() lnd.LightningClient {
-	return n.rpc
+	return n.runtime.rpc
 }
 
-func (n *LndNode) TearDown() error {
-	if n.logFile != nil {
-		err := n.logFile.Close()
-		if err != nil {
-			log.Printf("error closing logfile: %v", err)
-		}
-	}
-
-	if n.conn != nil {
-		err := n.conn.Close()
-		if err != nil {
-			log.Printf("error closing client connection: %v", err)
-		}
-	}
-
-	if n.cmd == nil || n.cmd.Process == nil {
-		// return if not properly initialized
-		// or error starting the process
-		return nil
-	}
-
-	if runtime.GOOS == "windows" {
-		return n.cmd.Process.Signal(os.Kill)
-	}
-
-	return n.cmd.Process.Signal(os.Interrupt)
-}
-
-func waitServerActive(h *TestHarness, conn grpc.ClientConnInterface, name string) {
-	log.Printf("%s: Waiting for LND rpc to be fully active.", name)
-	waitServerState(h, conn, name, func(s lnd.WalletState) bool {
+func (n *LndNode) waitServerActive(conn grpc.ClientConnInterface) error {
+	log.Printf("%s: Waiting for LND rpc to be fully active.", n.name)
+	return n.waitServerState(conn, func(s lnd.WalletState) bool {
 		return s == lnd.WalletState_SERVER_ACTIVE
 	})
 }
 
-func waitServerStarted(h *TestHarness, conn grpc.ClientConnInterface, name string) {
-	log.Printf("%s: Waiting for LND rpc to start.", name)
-	waitServerState(h, conn, name, func(s lnd.WalletState) bool {
+func (n *LndNode) waitServerStarted(conn grpc.ClientConnInterface) error {
+	log.Printf("%s: Waiting for LND rpc to start.", n.name)
+	return n.waitServerState(conn, func(s lnd.WalletState) bool {
 		return s != lnd.WalletState_WAITING_TO_START
 	})
 }
 
-func waitServerState(h *TestHarness, conn grpc.ClientConnInterface, name string, pred func(s lnd.WalletState) bool) {
+func (n *LndNode) waitServerState(conn grpc.ClientConnInterface, pred func(s lnd.WalletState) bool) error {
 	state := lnd.NewStateClient(conn)
-	client, err := state.SubscribeState(h.Ctx, &lnd.SubscribeStateRequest{})
-	CheckError(h.T, err)
+	client, err := state.SubscribeState(n.harness.Ctx, &lnd.SubscribeStateRequest{})
+	if err != nil {
+		return fmt.Errorf("subscribe state failed: %w", err)
+	}
 
 	errChan := make(chan error, 1)
 	done := make(chan struct{})
@@ -625,7 +720,7 @@ func waitServerState(h *TestHarness, conn grpc.ClientConnInterface, name string,
 				return
 			}
 
-			log.Printf("%s: Wallet state: %v", name, resp.State)
+			log.Printf("%s: Wallet state: %v", n.name, resp.State)
 			if pred(resp.State) {
 				close(done)
 				return
@@ -640,55 +735,90 @@ func waitServerState(h *TestHarness, conn grpc.ClientConnInterface, name string,
 			lastErr = err
 
 		case <-done:
-			return
+			return nil
 
-		case <-time.After(time.Until(h.Deadline())):
-			h.T.Fatalf("%s: timeout waiting for LND to start. last error: %v", name, lastErr)
+		case <-time.After(time.Until(n.harness.Deadline())):
+			return fmt.Errorf("timeout waiting for wallet state. last error: %w", lastErr)
 		}
 	}
 }
 
-func initWallet(h *TestHarness, conn grpc.ClientConnInterface, name string) ([]byte, *secp256k1.PrivateKey, *btcec.PublicKey) {
-	log.Printf("%s: Initializing LND wallet.", name)
+func (n *LndNode) unlockWallet(conn grpc.ClientConnInterface) error {
+	log.Printf("%s: Unlocking LND wallet.", n.name)
+	c := lnd.NewWalletUnlockerClient(conn)
+	_, err := c.UnlockWallet(n.harness.Ctx, &lnd.UnlockWalletRequest{
+		WalletPassword: n.walletPassword,
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to unlock wallet: %w", err)
+	}
+
+	return nil
+}
+
+func (n *LndNode) initWallet(conn grpc.ClientConnInterface) ([]byte, *secp256k1.PrivateKey, *btcec.PublicKey, error) {
+	log.Printf("%s: Initializing LND wallet.", n.name)
 	c := lnd.NewWalletUnlockerClient(conn)
 
-	seed, err := c.GenSeed(h.Ctx, &lnd.GenSeedRequest{})
-	CheckError(h.T, err)
+	seed, err := c.GenSeed(n.harness.Ctx, &lnd.GenSeedRequest{})
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to gen seed: %w", err)
+	}
 
-	pw := []byte("super-secret-password")
-	resp, err := c.InitWallet(h.Ctx, &lnd.InitWalletRequest{
-		WalletPassword:     pw,
+	resp, err := c.InitWallet(n.harness.Ctx, &lnd.InitWalletRequest{
+		WalletPassword:     n.walletPassword,
 		CipherSeedMnemonic: seed.CipherSeedMnemonic,
 		StatelessInit:      true,
 	})
-	CheckError(h.T, err)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to init wallet: %w", err)
+	}
 
 	var mnemonic aezeed.Mnemonic
 	copy(mnemonic[:], seed.CipherSeedMnemonic)
 
 	cipherSeed, err := mnemonic.ToCipherSeed(nil)
-	CheckError(h.T, err)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to obtain cipherseed: %w", err)
+	}
 
 	rootKey, err := hdkeychain.NewMaster(
 		cipherSeed.Entropy[:],
 		&chaincfg.RegressionNetParams,
 	)
-	CheckError(h.T, err)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to create master key: %w", err)
+	}
 
-	// node identity derication path = "m/1017'/1'/6'/0/0"
+	// node identity derivation path = "m/1017'/1'/6'/0/0"
 	k, err := rootKey.DeriveNonStandard(1017 + 2147483648)
-	CheckError(h.T, err)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to derive child 1: %w", err)
+	}
 	k, err = k.DeriveNonStandard(1 + 2147483648)
-	CheckError(h.T, err)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to derive child 2: %w", err)
+	}
 	k, err = k.DeriveNonStandard(6 + 2147483648)
-	CheckError(h.T, err)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to derive child 3: %w", err)
+	}
 	k, err = k.DeriveNonStandard(0)
-	CheckError(h.T, err)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to derive child 4: %w", err)
+	}
 	nodeKey, err := k.DeriveNonStandard(0)
-	CheckError(h.T, err)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to derive child 5: %w", err)
+	}
 	privKey, err := nodeKey.ECPrivKey()
-	CheckError(h.T, err)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to get ECPrivKey: %w", err)
+	}
 	pubKey, err := nodeKey.ECPubKey()
-	CheckError(h.T, err)
-	return resp.AdminMacaroon, privKey, pubKey
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to get ECPubKey: %w", err)
+	}
+	return resp.AdminMacaroon, privKey, pubKey, nil
 }

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/breez/lntest/cln"
@@ -25,19 +26,29 @@ import (
 )
 
 type ClnNode struct {
-	name     string
-	nodeId   []byte
-	harness  *TestHarness
-	miner    *Miner
-	cmd      *exec.Cmd
-	dir      string
-	rpc      cln.NodeClient
+	name        string
+	binary      string
+	args        []string
+	regtestDir  string
+	logfilePath string
+	nodeId      []byte
+	harness     *TestHarness
+	miner       *Miner
+	dir         string
+	host        string
+	port        uint32
+	grpcHost    string
+	grpcPort    uint32
+	privkey     *secp256k1.PrivateKey
+	runtime     *clnNodeRuntime
+	mtx         sync.Mutex
+}
+
+type clnNodeRuntime struct {
 	conn     *grpc.ClientConn
-	host     string
-	port     uint32
-	grpcHost string
-	grpcPort uint32
-	privkey  *secp256k1.PrivateKey
+	rpc      cln.NodeClient
+	cmd      *exec.Cmd
+	cleanups []*Cleanup
 }
 
 func NewClnNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *ClnNode {
@@ -49,6 +60,8 @@ func NewClnNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *Cln
 
 func NewClnNodeFromBinary(h *TestHarness, m *Miner, name string, binary string, extraArgs ...string) *ClnNode {
 	lightningdDir := h.GetDirectory(fmt.Sprintf("ld-%s", name))
+	regtestDir := filepath.Join(lightningdDir, "regtest")
+	logfilePath := filepath.Join(regtestDir, "log")
 	host := "localhost"
 	port, err := GetPort()
 	CheckError(h.T, err)
@@ -63,7 +76,8 @@ func NewClnNodeFromBinary(h *TestHarness, m *Miner, name string, binary string, 
 	CheckError(h.T, err)
 
 	s := privKey.Serialize()
-	args := []string{
+	p := privKey.PubKey().SerializeCompressed()
+	args := append([]string{
 		"--network=regtest",
 		"--log-file=log",
 		"--log-level=debug",
@@ -79,89 +93,23 @@ func NewClnNodeFromBinary(h *TestHarness, m *Miner, name string, binary string, 
 		fmt.Sprintf("--grpc-port=%d", grpcPort),
 		fmt.Sprintf("--bitcoin-rpcport=%d", m.rpcPort),
 		fmt.Sprintf("--bitcoin-cli=%s", bitcoinCliBinary),
-	}
-
-	cmd := exec.CommandContext(h.Ctx, binary, append(args, extraArgs...)...)
-	stderr, err := cmd.StderrPipe()
-	CheckError(h.T, err)
-
-	stdout, err := cmd.StdoutPipe()
-	CheckError(h.T, err)
-
-	log.Printf("%s: starting %s on port %d in dir %s...", name, binary, port, lightningdDir)
-	err = cmd.Start()
-	CheckError(h.T, err)
-
-	go func() {
-		// print any stderr output to the test log
-		scanner := bufio.NewScanner(stderr)
-		for scanner.Scan() {
-			log.Println(name + ": " + scanner.Text())
-		}
-	}()
-
-	go func() {
-		// print any stderr output to the test log
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			log.Println(name + ": " + scanner.Text())
-		}
-	}()
-
-	go func() {
-		err := cmd.Wait()
-		if err != nil && err.Error() != "signal: interrupt" {
-			log.Printf(name+": "+"lightningd exited with error %s", err)
-		} else {
-			log.Printf(name + ": " + "process exited normally")
-		}
-	}()
-
-	regtestDir := filepath.Join(lightningdDir, "regtest")
-	waitForLog(h, filepath.Join(regtestDir, "log"), "Server started with public key")
-
-	pemServerCA, err := os.ReadFile(filepath.Join(regtestDir, "ca.pem"))
-	CheckError(h.T, err)
-
-	certPool := x509.NewCertPool()
-	if !certPool.AppendCertsFromPEM(pemServerCA) {
-		h.T.Fatalf("failed to add server CA's certificate")
-	}
-
-	clientCert, err := tls.LoadX509KeyPair(filepath.Join(regtestDir, "client.pem"), filepath.Join(regtestDir, "client-key.pem"))
-	CheckError(h.T, err)
-
-	tlsConfig := &tls.Config{
-		RootCAs:      certPool,
-		Certificates: []tls.Certificate{clientCert},
-	}
-
-	tlsCredentials := credentials.NewTLS(tlsConfig)
-
-	grpcAddress := fmt.Sprintf("%s:%d", host, grpcPort)
-	conn, err := grpc.Dial(grpcAddress, grpc.WithTransportCredentials(tlsCredentials))
-	CheckError(h.T, err)
-
-	client := cln.NewNodeClient(conn)
-	info, err := client.Getinfo(h.Ctx, &cln.GetinfoRequest{})
-	CheckError(h.T, err)
-
-	log.Printf("%s: Has node id %x", name, info.Id)
+	}, extraArgs...)
 
 	node := &ClnNode{
-		name:     name,
-		nodeId:   info.Id,
-		harness:  h,
-		miner:    m,
-		cmd:      cmd,
-		dir:      lightningdDir,
-		conn:     conn,
-		rpc:      client,
-		port:     port,
-		host:     host,
-		grpcHost: host,
-		grpcPort: grpcPort,
-		privkey:  privKey,
+		name:        name,
+		binary:      binary,
+		args:        args,
+		regtestDir:  regtestDir,
+		logfilePath: logfilePath,
+		nodeId:      p,
+		harness:     h,
+		miner:       m,
+		dir:         lightningdDir,
+		port:        port,
+		host:        host,
+		grpcHost:    host,
+		grpcPort:    grpcPort,
+		privkey:     privKey,
 	}
 
 	h.AddStoppable(node)
@@ -170,9 +118,150 @@ func NewClnNodeFromBinary(h *TestHarness, m *Miner, name string, binary string, 
 	return node
 }
 
-func waitForLog(h *TestHarness, logfilePath string, phrase string) {
+func (n *ClnNode) Start() {
+	n.mtx.Lock()
+	defer n.mtx.Unlock()
+
+	if n.runtime != nil {
+		log.Printf("%s: Start called, but was already started.", n.name)
+		return
+	}
+
+	var cleanups []*Cleanup
+	cmd := exec.CommandContext(n.harness.Ctx, n.binary, n.args...)
+	stderr, err := cmd.StderrPipe()
+	CheckError(n.harness.T, err)
+
+	stdout, err := cmd.StdoutPipe()
+	CheckError(n.harness.T, err)
+
+	log.Printf("%s: starting %s on port %d in dir %s...", n.name, n.binary, n.port, n.dir)
+	err = cmd.Start()
+	CheckError(n.harness.T, err)
+
+	cleanups = append(cleanups, &Cleanup{
+		Name: "cmd",
+		Fn: func() error {
+			proc := cmd.Process
+			if proc != nil {
+				if runtime.GOOS == "windows" {
+					return proc.Signal(os.Kill)
+				}
+
+				return proc.Signal(os.Interrupt)
+			}
+
+			return nil
+		},
+	})
+
+	go func() {
+		// print any stderr output to the test log
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			log.Println(n.name + ": " + scanner.Text())
+		}
+	}()
+
+	go func() {
+		// print any stderr output to the test log
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			log.Println(n.name + ": " + scanner.Text())
+		}
+	}()
+
+	go func() {
+		err := cmd.Wait()
+		if err != nil && err.Error() != "signal: interrupt" {
+			log.Printf("%s: lightningd exited with error %s", n.name, err)
+		} else {
+			log.Printf("%s: process exited normally", n.name)
+		}
+	}()
+
+	err = n.waitForLog("Server started with public key")
+	if err != nil {
+		PerformCleanup(cleanups)
+		n.harness.T.Fatalf("%s: Error waiting for cln to start: %v", n.name, err)
+	}
+
+	pemServerCA, err := os.ReadFile(filepath.Join(n.regtestDir, "ca.pem"))
+	if err != nil {
+		PerformCleanup(cleanups)
+		n.harness.T.Fatalf("%s: Failed to read ca.pem: %v", n.name, err)
+	}
+
+	certPool := x509.NewCertPool()
+	if !certPool.AppendCertsFromPEM(pemServerCA) {
+		PerformCleanup(cleanups)
+		n.harness.T.Fatalf("%s: failed to add server CA's certificate", n.name)
+	}
+
+	clientCert, err := tls.LoadX509KeyPair(
+		filepath.Join(n.regtestDir, "client.pem"),
+		filepath.Join(n.regtestDir, "client-key.pem"),
+	)
+	if err != nil {
+		PerformCleanup(cleanups)
+		n.harness.T.Fatalf("%s: Failed to load LoadX509KeyPair: %v", n.name, err)
+	}
+
+	tlsConfig := &tls.Config{
+		RootCAs:      certPool,
+		Certificates: []tls.Certificate{clientCert},
+	}
+
+	tlsCredentials := credentials.NewTLS(tlsConfig)
+
+	grpcAddress := fmt.Sprintf("%s:%d", n.host, n.grpcPort)
+	conn, err := grpc.Dial(
+		grpcAddress,
+		grpc.WithTransportCredentials(tlsCredentials),
+	)
+	if err != nil {
+		PerformCleanup(cleanups)
+		n.harness.T.Fatalf("%s: Failed to obtain grpc client: %v", n.name, err)
+	}
+	cleanups = append(cleanups, &Cleanup{
+		Name: "grpc conn",
+		Fn:   conn.Close,
+	})
+
+	client := cln.NewNodeClient(conn)
+	info, err := client.Getinfo(n.harness.Ctx, &cln.GetinfoRequest{})
+	if err != nil {
+		PerformCleanup(cleanups)
+		n.harness.T.Fatalf("%s: Failed to call Getinfo: %v", n.name, err)
+	}
+	log.Printf("%s: Has node id %x", n.name, info.Id)
+
+	n.runtime = &clnNodeRuntime{
+		conn:     conn,
+		rpc:      client,
+		cmd:      cmd,
+		cleanups: cleanups,
+	}
+}
+
+func (n *ClnNode) Stop() error {
+	n.mtx.Lock()
+	defer n.mtx.Unlock()
+
+	if n.runtime == nil {
+		log.Printf("%s: Stop called, but was already stopped.", n.name)
+		return nil
+	}
+
+	PerformCleanup(n.runtime.cleanups)
+	n.runtime = nil
+	return nil
+}
+
+func (n *ClnNode) waitForLog(phrase string) error {
+	logfilePath := filepath.Join(n.dir, "regtest", "log")
 	// at startup we need to wait for the file to open
-	for time.Now().Before(h.Deadline()) {
+	for time.Now().Before(n.harness.Deadline()) {
 		if _, err := os.Stat(logfilePath); os.IsNotExist(err) {
 			<-time.After(waitSleepInterval)
 			continue
@@ -183,23 +272,26 @@ func waitForLog(h *TestHarness, logfilePath string, phrase string) {
 	defer logfile.Close()
 
 	reader := bufio.NewReader(logfile)
-	for time.Now().Before(h.Deadline()) {
+	for time.Now().Before(n.harness.Deadline()) {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
 				<-time.After(waitSleepInterval)
 			} else {
-				CheckError(h.T, err)
+				return err
 			}
 		}
 		m, err := regexp.MatchString(phrase, line)
-		CheckError(h.T, err)
+		if err != nil {
+			return err
+		}
+
 		if m {
-			return
+			return nil
 		}
 	}
 
-	h.T.Fatalf("Unable to find \"%s\" in %s", phrase, logfilePath)
+	return fmt.Errorf("unable to find \"%s\" in %s", phrase, logfilePath)
 }
 
 func (n *ClnNode) NodeId() []byte {
@@ -218,9 +310,13 @@ func (n *ClnNode) PrivateKey() *secp256k1.PrivateKey {
 	return n.privkey
 }
 
+func (n *ClnNode) IsStarted() bool {
+	return n.runtime != nil
+}
+
 func (n *ClnNode) WaitForSync() {
 	for {
-		info, _ := n.rpc.Getinfo(n.harness.Ctx, &cln.GetinfoRequest{})
+		info, _ := n.runtime.rpc.Getinfo(n.harness.Ctx, &cln.GetinfoRequest{})
 
 		blockHeight := n.miner.GetBlockHeight()
 
@@ -246,7 +342,7 @@ func (n *ClnNode) WaitForSync() {
 }
 
 func (n *ClnNode) Fund(amountSat uint64) {
-	addrResponse, err := n.rpc.NewAddr(
+	addrResponse, err := n.runtime.rpc.NewAddr(
 		n.harness.Ctx,
 		&cln.NewaddrRequest{
 			Addresstype: cln.NewaddrRequest_BECH32.Enum(),
@@ -261,7 +357,7 @@ func (n *ClnNode) Fund(amountSat uint64) {
 func (n *ClnNode) ConnectPeer(peer LightningNode) {
 	host := peer.Host()
 	port := peer.Port()
-	_, err := n.rpc.ConnectPeer(n.harness.Ctx, &cln.ConnectRequest{
+	_, err := n.runtime.rpc.ConnectPeer(n.harness.Ctx, &cln.ConnectRequest{
 		Id:   hex.EncodeToString(peer.NodeId()),
 		Host: &host,
 		Port: &port,
@@ -274,7 +370,7 @@ func (n *ClnNode) OpenChannel(peer LightningNode, options *OpenChannelOptions) *
 
 	// open a channel
 	announce := true
-	fundResult, err := n.rpc.FundChannel(n.harness.Ctx, &cln.FundchannelRequest{
+	fundResult, err := n.runtime.rpc.FundChannel(n.harness.Ctx, &cln.FundchannelRequest{
 		Id: peer.NodeId(),
 		Amount: &cln.AmountOrAll{
 			Value: &cln.AmountOrAll_Amount{
@@ -300,7 +396,7 @@ func (n *ClnNode) WaitForChannelReady(channel *ChannelInfo) ShortChannelID {
 	peerId := channel.GetPeer(n).NodeId()
 
 	for {
-		peers, err := n.rpc.ListPeers(n.harness.Ctx, &cln.ListpeersRequest{
+		peers, err := n.runtime.rpc.ListPeers(n.harness.Ctx, &cln.ListpeersRequest{
 			Id: peerId,
 		})
 		CheckError(n.harness.T, err)
@@ -331,7 +427,7 @@ func (n *ClnNode) WaitForChannelReady(channel *ChannelInfo) ShortChannelID {
 			}
 
 			if peerChannel.State == cln.ListpeersPeersChannels_CHANNELD_NORMAL {
-				channelsResp, err := n.rpc.ListChannels(n.harness.Ctx, &cln.ListchannelsRequest{
+				channelsResp, err := n.runtime.rpc.ListChannels(n.harness.Ctx, &cln.ListchannelsRequest{
 					ShortChannelId: peerChannel.ShortChannelId,
 				})
 				CheckError(n.harness.T, err)
@@ -376,7 +472,7 @@ func (n *ClnNode) CreateBolt11Invoice(options *CreateInvoiceOptions) *CreateInvo
 		req.Preimage = *options.Preimage
 	}
 
-	resp, err := n.rpc.Invoice(n.harness.Ctx, req)
+	resp, err := n.runtime.rpc.Invoice(n.harness.Ctx, req)
 	CheckError(n.harness.T, err)
 
 	return &CreateInvoiceResult{
@@ -387,7 +483,7 @@ func (n *ClnNode) CreateBolt11Invoice(options *CreateInvoiceOptions) *CreateInvo
 }
 
 func (n *ClnNode) SignMessage(message []byte) []byte {
-	resp, err := n.rpc.SignMessage(n.harness.Ctx, &cln.SignmessageRequest{
+	resp, err := n.runtime.rpc.SignMessage(n.harness.Ctx, &cln.SignmessageRequest{
 		Message: hex.EncodeToString(message),
 	})
 	CheckError(n.harness.T, err)
@@ -397,7 +493,7 @@ func (n *ClnNode) SignMessage(message []byte) []byte {
 
 func (n *ClnNode) Pay(bolt11 string) *PayResult {
 	rpcTimeout := getTimeoutSeconds(n.harness.T, n.harness.Deadline())
-	resp, err := n.rpc.Pay(n.harness.Ctx, &cln.PayRequest{
+	resp, err := n.runtime.rpc.Pay(n.harness.Ctx, &cln.PayRequest{
 		Bolt11:   bolt11,
 		RetryFor: &rpcTimeout,
 	})
@@ -413,7 +509,7 @@ func (n *ClnNode) Pay(bolt11 string) *PayResult {
 }
 
 func (n *ClnNode) GetRoute(destination []byte, amountMsat uint64) *Route {
-	route, err := n.rpc.GetRoute(n.harness.Ctx, &cln.GetrouteRequest{
+	route, err := n.runtime.rpc.GetRoute(n.harness.Ctx, &cln.GetrouteRequest{
 		Id: destination,
 		AmountMsat: &cln.Amount{
 			Msat: amountMsat,
@@ -435,7 +531,7 @@ func (n *ClnNode) GetRoute(destination []byte, amountMsat uint64) *Route {
 }
 
 func (n *ClnNode) GetChannels() []*ChannelDetails {
-	peers, err := n.rpc.ListPeers(n.harness.Ctx, &cln.ListpeersRequest{})
+	peers, err := n.runtime.rpc.ListPeers(n.harness.Ctx, &cln.ListpeersRequest{})
 	CheckError(n.harness.T, err)
 
 	var result []*ChannelDetails
@@ -473,7 +569,7 @@ func (n *ClnNode) startPayViaRoute(amountMsat uint64, paymentHash []byte, paymen
 		})
 	}
 
-	resp, err := n.rpc.SendPay(n.harness.Ctx, &cln.SendpayRequest{
+	resp, err := n.runtime.rpc.SendPay(n.harness.Ctx, &cln.SendpayRequest{
 		Route:       sendPayRoute,
 		PaymentHash: paymentHash,
 		AmountMsat: &cln.Amount{
@@ -494,7 +590,7 @@ func (n *ClnNode) PayViaRoute(
 ) *PayResult {
 	resp := n.startPayViaRoute(amountMsat, paymentHash, paymentSecret, route)
 	t := getTimeoutSeconds(n.harness.T, n.harness.Deadline())
-	w, err := n.rpc.WaitSendPay(n.harness.Ctx, &cln.WaitsendpayRequest{
+	w, err := n.runtime.rpc.WaitSendPay(n.harness.Ctx, &cln.WaitsendpayRequest{
 		PaymentHash: resp.PaymentHash,
 		Timeout:     &t,
 		Partid:      resp.Partid,
@@ -512,7 +608,7 @@ func (n *ClnNode) PayViaRoute(
 }
 
 func (n *ClnNode) GetInvoice(paymentHash []byte) *GetInvoiceResponse {
-	resp, err := n.rpc.ListInvoices(n.harness.Ctx, &cln.ListinvoicesRequest{
+	resp, err := n.runtime.rpc.ListInvoices(n.harness.Ctx, &cln.ListinvoicesRequest{
 		PaymentHash: paymentHash,
 	})
 	CheckError(n.harness.T, err)
@@ -539,7 +635,7 @@ func (n *ClnNode) GetInvoice(paymentHash []byte) *GetInvoiceResponse {
 }
 
 func (n *ClnNode) GetPeerFeatures(peerId []byte) map[uint32]string {
-	resp, err := n.rpc.ListPeers(n.harness.Ctx, &cln.ListpeersRequest{
+	resp, err := n.runtime.rpc.ListPeers(n.harness.Ctx, &cln.ListpeersRequest{
 		Id: peerId,
 	})
 	CheckError(n.harness.T, err)
@@ -553,7 +649,7 @@ func (n *ClnNode) GetPeerFeatures(peerId []byte) map[uint32]string {
 }
 
 func (n *ClnNode) GetRemoteNodeFeatures(nodeId []byte) map[uint32]string {
-	resp, err := n.rpc.ListNodes(n.harness.Ctx, &cln.ListnodesRequest{
+	resp, err := n.runtime.rpc.ListNodes(n.harness.Ctx, &cln.ListnodesRequest{
 		Id: nodeId,
 	})
 	CheckError(n.harness.T, err)
@@ -576,25 +672,4 @@ func (n *ClnNode) mapFeatures(f []byte) map[uint32]string {
 		}
 	}
 	return r
-}
-
-func (n *ClnNode) TearDown() error {
-	if n.conn != nil {
-		err := n.conn.Close()
-		if err != nil {
-			log.Printf("Error closing client conn: %v", err)
-		}
-	}
-
-	if n.cmd == nil || n.cmd.Process == nil {
-		// return if not properly initialized
-		// or error starting the process
-		return nil
-	}
-
-	if runtime.GOOS == "windows" {
-		return n.cmd.Process.Signal(os.Kill)
-	}
-
-	return n.cmd.Process.Signal(os.Interrupt)
 }

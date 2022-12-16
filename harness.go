@@ -37,7 +37,7 @@ type logFile struct {
 }
 
 type Stoppable interface {
-	TearDown() error
+	Stop() error
 }
 
 type Cleanable interface {
@@ -109,7 +109,7 @@ func (h *TestHarness) TearDown() {
 	defer h.mtx.Unlock()
 
 	for _, stoppable := range h.stoppables {
-		err := stoppable.TearDown()
+		err := stoppable.Stop()
 		if err != nil {
 			log.Printf("Failed to tear down artifact. Error: %v", err)
 		}

@@ -9,10 +9,12 @@ import (
 )
 
 type LightningNode interface {
+	Stoppable
 	NodeId() []byte
 	Host() string
 	Port() uint32
-	TearDown() error
+	Start()
+	IsStarted() bool
 	PrivateKey() *secp256k1.PrivateKey
 
 	WaitForSync()

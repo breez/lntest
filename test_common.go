@@ -37,7 +37,7 @@ var (
 	)
 )
 
-var waitSleepInterval = time.Millisecond * 50
+var waitSleepInterval = time.Millisecond * 100
 
 func CheckError(t *testing.T, err error) {
 	if err != nil {
