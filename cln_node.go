@@ -26,22 +26,23 @@ import (
 )
 
 type ClnNode struct {
-	name        string
-	binary      string
-	args        []string
-	regtestDir  string
-	logfilePath string
-	nodeId      []byte
-	harness     *TestHarness
-	miner       *Miner
-	dir         string
-	host        string
-	port        uint32
-	grpcHost    string
-	grpcPort    uint32
-	privkey     *secp256k1.PrivateKey
-	runtime     *clnNodeRuntime
-	mtx         sync.Mutex
+	name         string
+	binary       string
+	args         []string
+	regtestDir   string
+	logfilePath  string
+	nodeId       []byte
+	harness      *TestHarness
+	miner        *Miner
+	dir          string
+	host         string
+	port         uint32
+	grpcHost     string
+	grpcPort     uint32
+	privkey      *secp256k1.PrivateKey
+	runtime      *clnNodeRuntime
+	mtx          sync.Mutex
+	timesStarted int
 }
 
 type clnNodeRuntime struct {
@@ -49,6 +50,7 @@ type clnNodeRuntime struct {
 	rpc      cln.NodeClient
 	cmd      *exec.Cmd
 	cleanups []*Cleanup
+	done     chan struct{}
 }
 
 func NewClnNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *ClnNode {
@@ -139,6 +141,7 @@ func (n *ClnNode) Start() {
 	err = cmd.Start()
 	CheckError(n.harness.T, err)
 
+	done := make(chan struct{})
 	cleanups = append(cleanups, &Cleanup{
 		Name: "cmd",
 		Fn: func() error {
@@ -151,6 +154,7 @@ func (n *ClnNode) Start() {
 				return proc.Signal(os.Interrupt)
 			}
 
+			<-done
 			return nil
 		},
 	})
@@ -178,6 +182,7 @@ func (n *ClnNode) Start() {
 		} else {
 			log.Printf("%s: process exited normally", n.name)
 		}
+		close(done)
 	}()
 
 	err = n.waitForLog("Server started with public key")
@@ -185,6 +190,7 @@ func (n *ClnNode) Start() {
 		PerformCleanup(cleanups)
 		n.harness.T.Fatalf("%s: Error waiting for cln to start: %v", n.name, err)
 	}
+	n.timesStarted += 1
 
 	pemServerCA, err := os.ReadFile(filepath.Join(n.regtestDir, "ca.pem"))
 	if err != nil {
@@ -241,6 +247,7 @@ func (n *ClnNode) Start() {
 		rpc:      client,
 		cmd:      cmd,
 		cleanups: cleanups,
+		done:     done,
 	}
 }
 
@@ -272,6 +279,7 @@ func (n *ClnNode) waitForLog(phrase string) error {
 	defer logfile.Close()
 
 	reader := bufio.NewReader(logfile)
+	counted := 0
 	for time.Now().Before(n.harness.Deadline()) {
 		line, err := reader.ReadString('\n')
 		if err != nil {
@@ -287,7 +295,11 @@ func (n *ClnNode) waitForLog(phrase string) error {
 		}
 
 		if m {
-			return nil
+			if counted == n.timesStarted {
+				return nil
+			}
+
+			counted += 1
 		}
 	}
 

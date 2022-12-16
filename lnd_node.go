@@ -53,6 +53,7 @@ type lndNodeRuntime struct {
 	rpc      lnd.LightningClient
 	logFile  *os.File
 	cleanups []*Cleanup
+	done     chan struct{}
 }
 
 func NewLndNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *LndNode {
@@ -153,6 +154,7 @@ func (n *LndNode) Start() {
 		log.Fatalf("%s: Failed to start LND: %v", n.name, err)
 	}
 
+	done := make(chan struct{})
 	cleanups = append(cleanups, &Cleanup{
 		Name: "cmd",
 		Fn: func() error {
@@ -165,6 +167,7 @@ func (n *LndNode) Start() {
 				return proc.Signal(os.Interrupt)
 			}
 
+			<-done
 			return nil
 		},
 	})
@@ -176,6 +179,7 @@ func (n *LndNode) Start() {
 		} else {
 			log.Printf("%s: process exited normally.", n.name)
 		}
+		close(done)
 	}()
 
 	tlsCert, tlsCreds, err := n.waitForTlsCert()
@@ -268,6 +272,7 @@ func (n *LndNode) Start() {
 		rpc:      client,
 		logFile:  logFile,
 		cleanups: cleanups,
+		done:     done,
 	}
 }
 
