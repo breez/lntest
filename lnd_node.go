@@ -43,6 +43,13 @@ type LndNode struct {
 }
 
 func NewLndNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *LndNode {
+	binary, err := GetLndBinary()
+	CheckError(h.T, err)
+
+	return NewLndNodeFromBinary(h, m, name, binary, extraArgs...)
+}
+
+func NewLndNodeFromBinary(h *TestHarness, m *Miner, name string, binary string, extraArgs ...string) *LndNode {
 	lndDir := h.GetDirectory(fmt.Sprintf("lnd-%s", name))
 	log.Printf("%s: Creating LND node in dir %s", name, lndDir)
 	host := "127.0.0.1"
@@ -53,9 +60,6 @@ func NewLndNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *Lnd
 	CheckError(h.T, err)
 
 	restPort, err := GetPort()
-	CheckError(h.T, err)
-
-	binary, err := GetLndBinary()
 	CheckError(h.T, err)
 
 	grpcAddress := fmt.Sprintf("%s:%d", host, grpcPort)
@@ -102,29 +106,7 @@ func NewLndNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *Lnd
 		}
 	}()
 
-	// Wait until TLS certificate is created
-	tlsCertPath := filepath.Join(lndDir, "tls.cert")
-	var tlsCreds credentials.TransportCredentials
-	for {
-		tlsCreds, err = credentials.NewClientTLSFromFile(
-			tlsCertPath,
-			"",
-		)
-
-		if err == nil {
-			break
-		}
-
-		if time.Now().After(h.Deadline()) {
-			h.T.Fatalf("%s: tls.cert not created before timeout", name)
-		}
-
-		log.Printf("%s: Waiting for tls cert to appear. %v", name, err)
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	CheckError(h.T, err)
-
+	tlsCert, tlsCreds := waitForTlsCert(h, name, lndDir)
 	opts := []grpc.DialOption{
 		grpc.WithBlock(),
 		grpc.WithTransportCredentials(tlsCreds),
@@ -160,9 +142,6 @@ func NewLndNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *Lnd
 	nodeId, err := hex.DecodeString(info.IdentityPubkey)
 	CheckError(h.T, err)
 
-	tlsCert, err := os.ReadFile(tlsCertPath)
-	CheckError(h.T, err)
-
 	node := &LndNode{
 		name:     name,
 		nodeId:   nodeId,
@@ -187,6 +166,40 @@ func NewLndNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *Lnd
 	h.RegisterLogfile(logFilePath, fmt.Sprintf("lnd-stdout-%s", name))
 
 	return node
+}
+
+func waitForTlsCert(
+	h *TestHarness,
+	name string,
+	lndDir string,
+) ([]byte, credentials.TransportCredentials) {
+	tlsCertPath := filepath.Join(lndDir, "tls.cert")
+	var tlsCreds credentials.TransportCredentials
+	var err error
+	for {
+		tlsCreds, err = credentials.NewClientTLSFromFile(
+			tlsCertPath,
+			"",
+		)
+
+		if err == nil {
+			break
+		}
+
+		if time.Now().After(h.Deadline()) {
+			h.T.Fatalf("%s: tls.cert not created before timeout", name)
+		}
+
+		log.Printf("%s: Waiting for tls cert to appear. %v", name, err)
+		<-time.After(50 * time.Millisecond)
+	}
+
+	CheckError(h.T, err)
+
+	tlsCert, err := os.ReadFile(tlsCertPath)
+	CheckError(h.T, err)
+
+	return tlsCert, tlsCreds
 }
 
 func (n *LndNode) NodeId() []byte {
@@ -239,7 +252,7 @@ func (n *LndNode) WaitForSync() {
 			n.harness.T.Fatalf("%s: timed out waiting for channel normal", n.name)
 		}
 
-		time.Sleep(waitSleepInterval)
+		<-time.After(waitSleepInterval)
 	}
 }
 
@@ -340,7 +353,7 @@ func (n *LndNode) WaitForChannelReady(channel *ChannelInfo) ShortChannelID {
 			n.harness.T.Fatalf("%s: timed out waiting for channel normal", n.name)
 		}
 
-		time.Sleep(waitSleepInterval)
+		<-time.After(waitSleepInterval)
 	}
 }
 func (n *LndNode) CreateBolt11Invoice(options *CreateInvoiceOptions) *CreateInvoiceResult {
@@ -646,6 +659,7 @@ func initWallet(h *TestHarness, conn grpc.ClientConnInterface, name string) ([]b
 	resp, err := c.InitWallet(h.Ctx, &lnd.InitWalletRequest{
 		WalletPassword:     pw,
 		CipherSeedMnemonic: seed.CipherSeedMnemonic,
+		StatelessInit:      true,
 	})
 	CheckError(h.T, err)
 

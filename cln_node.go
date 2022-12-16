@@ -24,7 +24,7 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
-type CoreLightningNode struct {
+type ClnNode struct {
 	name     string
 	nodeId   []byte
 	harness  *TestHarness
@@ -40,16 +40,20 @@ type CoreLightningNode struct {
 	privkey  *secp256k1.PrivateKey
 }
 
-func NewCoreLightningNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *CoreLightningNode {
+func NewClnNode(h *TestHarness, m *Miner, name string, extraArgs ...string) *ClnNode {
+	binary, err := GetLightningdBinary()
+	CheckError(h.T, err)
+
+	return NewClnNodeFromBinary(h, m, name, binary, extraArgs...)
+}
+
+func NewClnNodeFromBinary(h *TestHarness, m *Miner, name string, binary string, extraArgs ...string) *ClnNode {
 	lightningdDir := h.GetDirectory(fmt.Sprintf("ld-%s", name))
 	host := "localhost"
 	port, err := GetPort()
 	CheckError(h.T, err)
 
 	grpcPort, err := GetPort()
-	CheckError(h.T, err)
-
-	binary, err := GetLightningdBinary()
 	CheckError(h.T, err)
 
 	bitcoinCliBinary, err := GetBitcoinCliBinary()
@@ -144,7 +148,7 @@ func NewCoreLightningNode(h *TestHarness, m *Miner, name string, extraArgs ...st
 
 	log.Printf("%s: Has node id %x", name, info.Id)
 
-	node := &CoreLightningNode{
+	node := &ClnNode{
 		name:     name,
 		nodeId:   info.Id,
 		harness:  h,
@@ -170,7 +174,7 @@ func waitForLog(h *TestHarness, logfilePath string, phrase string) {
 	// at startup we need to wait for the file to open
 	for time.Now().Before(h.Deadline()) {
 		if _, err := os.Stat(logfilePath); os.IsNotExist(err) {
-			time.Sleep(waitSleepInterval)
+			<-time.After(waitSleepInterval)
 			continue
 		}
 		break
@@ -183,7 +187,7 @@ func waitForLog(h *TestHarness, logfilePath string, phrase string) {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
-				time.Sleep(waitSleepInterval)
+				<-time.After(waitSleepInterval)
 			} else {
 				CheckError(h.T, err)
 			}
@@ -198,23 +202,23 @@ func waitForLog(h *TestHarness, logfilePath string, phrase string) {
 	h.T.Fatalf("Unable to find \"%s\" in %s", phrase, logfilePath)
 }
 
-func (n *CoreLightningNode) NodeId() []byte {
+func (n *ClnNode) NodeId() []byte {
 	return n.nodeId
 }
 
-func (n *CoreLightningNode) Host() string {
+func (n *ClnNode) Host() string {
 	return n.host
 }
 
-func (n *CoreLightningNode) Port() uint32 {
+func (n *ClnNode) Port() uint32 {
 	return n.port
 }
 
-func (n *CoreLightningNode) PrivateKey() *secp256k1.PrivateKey {
+func (n *ClnNode) PrivateKey() *secp256k1.PrivateKey {
 	return n.privkey
 }
 
-func (n *CoreLightningNode) WaitForSync() {
+func (n *ClnNode) WaitForSync() {
 	for {
 		info, _ := n.rpc.Getinfo(n.harness.Ctx, &cln.GetinfoRequest{})
 
@@ -237,11 +241,11 @@ func (n *CoreLightningNode) WaitForSync() {
 			n.harness.T.Fatal("timed out waiting for channel normal")
 		}
 
-		time.Sleep(waitSleepInterval)
+		<-time.After(waitSleepInterval)
 	}
 }
 
-func (n *CoreLightningNode) Fund(amountSat uint64) {
+func (n *ClnNode) Fund(amountSat uint64) {
 	addrResponse, err := n.rpc.NewAddr(
 		n.harness.Ctx,
 		&cln.NewaddrRequest{
@@ -254,7 +258,7 @@ func (n *CoreLightningNode) Fund(amountSat uint64) {
 	n.WaitForSync()
 }
 
-func (n *CoreLightningNode) ConnectPeer(peer LightningNode) {
+func (n *ClnNode) ConnectPeer(peer LightningNode) {
 	host := peer.Host()
 	port := peer.Port()
 	_, err := n.rpc.ConnectPeer(n.harness.Ctx, &cln.ConnectRequest{
@@ -265,7 +269,7 @@ func (n *CoreLightningNode) ConnectPeer(peer LightningNode) {
 	CheckError(n.harness.T, err)
 }
 
-func (n *CoreLightningNode) OpenChannel(peer LightningNode, options *OpenChannelOptions) *ChannelInfo {
+func (n *ClnNode) OpenChannel(peer LightningNode, options *OpenChannelOptions) *ChannelInfo {
 	n.ConnectPeer(peer)
 
 	// open a channel
@@ -291,7 +295,7 @@ func (n *CoreLightningNode) OpenChannel(peer LightningNode, options *OpenChannel
 	}
 }
 
-func (n *CoreLightningNode) WaitForChannelReady(channel *ChannelInfo) ShortChannelID {
+func (n *ClnNode) WaitForChannelReady(channel *ChannelInfo) ShortChannelID {
 	log.Printf("%s: Wait for channel ready.", n.name)
 	peerId := channel.GetPeer(n).NodeId()
 
@@ -345,11 +349,11 @@ func (n *CoreLightningNode) WaitForChannelReady(channel *ChannelInfo) ShortChann
 			n.harness.T.Fatal("timed out waiting for channel normal")
 		}
 
-		time.Sleep(waitSleepInterval)
+		<-time.After(waitSleepInterval)
 	}
 }
 
-func (n *CoreLightningNode) CreateBolt11Invoice(options *CreateInvoiceOptions) *CreateInvoiceResult {
+func (n *ClnNode) CreateBolt11Invoice(options *CreateInvoiceOptions) *CreateInvoiceResult {
 	label, err := GenerateRandomString()
 	CheckError(n.harness.T, err)
 
@@ -382,7 +386,7 @@ func (n *CoreLightningNode) CreateBolt11Invoice(options *CreateInvoiceOptions) *
 	}
 }
 
-func (n *CoreLightningNode) SignMessage(message []byte) []byte {
+func (n *ClnNode) SignMessage(message []byte) []byte {
 	resp, err := n.rpc.SignMessage(n.harness.Ctx, &cln.SignmessageRequest{
 		Message: hex.EncodeToString(message),
 	})
@@ -391,7 +395,7 @@ func (n *CoreLightningNode) SignMessage(message []byte) []byte {
 	return resp.Signature
 }
 
-func (n *CoreLightningNode) Pay(bolt11 string) *PayResult {
+func (n *ClnNode) Pay(bolt11 string) *PayResult {
 	rpcTimeout := getTimeoutSeconds(n.harness.T, n.harness.Deadline())
 	resp, err := n.rpc.Pay(n.harness.Ctx, &cln.PayRequest{
 		Bolt11:   bolt11,
@@ -408,7 +412,7 @@ func (n *CoreLightningNode) Pay(bolt11 string) *PayResult {
 	}
 }
 
-func (n *CoreLightningNode) GetRoute(destination []byte, amountMsat uint64) *Route {
+func (n *ClnNode) GetRoute(destination []byte, amountMsat uint64) *Route {
 	route, err := n.rpc.GetRoute(n.harness.Ctx, &cln.GetrouteRequest{
 		Id: destination,
 		AmountMsat: &cln.Amount{
@@ -430,7 +434,7 @@ func (n *CoreLightningNode) GetRoute(destination []byte, amountMsat uint64) *Rou
 	return result
 }
 
-func (n *CoreLightningNode) GetChannels() []*ChannelDetails {
+func (n *ClnNode) GetChannels() []*ChannelDetails {
 	peers, err := n.rpc.ListPeers(n.harness.Ctx, &cln.ListpeersRequest{})
 	CheckError(n.harness.T, err)
 
@@ -456,7 +460,7 @@ func (n *CoreLightningNode) GetChannels() []*ChannelDetails {
 	return result
 }
 
-func (n *CoreLightningNode) startPayViaRoute(amountMsat uint64, paymentHash []byte, paymentSecret []byte, route *Route) *cln.SendpayResponse {
+func (n *ClnNode) startPayViaRoute(amountMsat uint64, paymentHash []byte, paymentSecret []byte, route *Route) *cln.SendpayResponse {
 	var sendPayRoute []*cln.SendpayRoute
 	for _, hop := range route.Hops {
 		sendPayRoute = append(sendPayRoute, &cln.SendpayRoute{
@@ -482,7 +486,7 @@ func (n *CoreLightningNode) startPayViaRoute(amountMsat uint64, paymentHash []by
 	return resp
 }
 
-func (n *CoreLightningNode) PayViaRoute(
+func (n *ClnNode) PayViaRoute(
 	amountMsat uint64,
 	paymentHash []byte,
 	paymentSecret []byte,
@@ -507,7 +511,7 @@ func (n *CoreLightningNode) PayViaRoute(
 	}
 }
 
-func (n *CoreLightningNode) GetInvoice(paymentHash []byte) *GetInvoiceResponse {
+func (n *ClnNode) GetInvoice(paymentHash []byte) *GetInvoiceResponse {
 	resp, err := n.rpc.ListInvoices(n.harness.Ctx, &cln.ListinvoicesRequest{
 		PaymentHash: paymentHash,
 	})
@@ -534,7 +538,7 @@ func (n *CoreLightningNode) GetInvoice(paymentHash []byte) *GetInvoiceResponse {
 	}
 }
 
-func (n *CoreLightningNode) GetPeerFeatures(peerId []byte) map[uint32]string {
+func (n *ClnNode) GetPeerFeatures(peerId []byte) map[uint32]string {
 	resp, err := n.rpc.ListPeers(n.harness.Ctx, &cln.ListpeersRequest{
 		Id: peerId,
 	})
@@ -548,7 +552,7 @@ func (n *CoreLightningNode) GetPeerFeatures(peerId []byte) map[uint32]string {
 	return n.mapFeatures(node.Features)
 }
 
-func (n *CoreLightningNode) GetRemoteNodeFeatures(nodeId []byte) map[uint32]string {
+func (n *ClnNode) GetRemoteNodeFeatures(nodeId []byte) map[uint32]string {
 	resp, err := n.rpc.ListNodes(n.harness.Ctx, &cln.ListnodesRequest{
 		Id: nodeId,
 	})
@@ -561,7 +565,7 @@ func (n *CoreLightningNode) GetRemoteNodeFeatures(nodeId []byte) map[uint32]stri
 	return n.mapFeatures(node.Features)
 }
 
-func (n *CoreLightningNode) mapFeatures(f []byte) map[uint32]string {
+func (n *ClnNode) mapFeatures(f []byte) map[uint32]string {
 	r := make(map[uint32]string)
 	for i := 0; i < len(f); i++ {
 		b := f[i]
@@ -574,7 +578,7 @@ func (n *CoreLightningNode) mapFeatures(f []byte) map[uint32]string {
 	return r
 }
 
-func (n *CoreLightningNode) TearDown() error {
+func (n *ClnNode) TearDown() error {
 	if n.conn != nil {
 		err := n.conn.Close()
 		if err != nil {
