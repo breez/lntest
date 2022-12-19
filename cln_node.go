@@ -381,7 +381,6 @@ func (n *ClnNode) OpenChannel(peer LightningNode, options *OpenChannelOptions) *
 	n.ConnectPeer(peer)
 
 	// open a channel
-	announce := true
 	fundResult, err := n.runtime.rpc.FundChannel(n.harness.Ctx, &cln.FundchannelRequest{
 		Id: peer.NodeId(),
 		Amount: &cln.AmountOrAll{
@@ -391,7 +390,7 @@ func (n *ClnNode) OpenChannel(peer LightningNode, options *OpenChannelOptions) *
 				},
 			},
 		},
-		Announce: &announce,
+		Announce: &options.IsPublic,
 	})
 	CheckError(n.harness.T, err)
 

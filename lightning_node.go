@@ -38,6 +38,7 @@ type LightningNode interface {
 }
 
 type OpenChannelOptions struct {
+	IsPublic  bool
 	AmountSat uint64
 }
 

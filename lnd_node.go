@@ -412,7 +412,7 @@ func (n *LndNode) OpenChannel(peer LightningNode, options *OpenChannelOptions) *
 	fundResult, err := n.runtime.rpc.OpenChannelSync(n.harness.Ctx, &lnd.OpenChannelRequest{
 		NodePubkey:         peer.NodeId(),
 		LocalFundingAmount: int64(options.AmountSat),
-		Private:            false,
+		Private:            !options.IsPublic,
 	})
 	CheckError(n.harness.T, err)
 
