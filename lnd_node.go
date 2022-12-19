@@ -17,6 +17,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/hdkeychain"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/lightningnetwork/lnd/aezeed"
 	"golang.org/x/exp/slices"
@@ -427,7 +428,9 @@ func (n *LndNode) OpenChannel(peer LightningNode, options *OpenChannelOptions) *
 func (n *LndNode) WaitForChannelReady(channel *ChannelInfo) ShortChannelID {
 	peerId := channel.GetPeer(n).NodeId()
 	peerIdStr := hex.EncodeToString(peerId)
-	txidStr := hex.EncodeToString(channel.FundingTxId)
+	ch, err := chainhash.NewHash(channel.FundingTxId)
+	CheckError(n.harness.T, err)
+	txidStr := ch.String()
 
 	for {
 		lc, err := n.runtime.rpc.ListChannels(n.harness.Ctx, &lnd.ListChannelsRequest{
@@ -449,9 +452,12 @@ func (n *LndNode) WaitForChannelReady(channel *ChannelInfo) ShortChannelID {
 		if index >= 0 {
 			c := lc.Channels[index]
 			if c.Active {
-				return NewShortChanIDFromInt(c.ChanId)
+				if c.Private {
+					return NewShortChanIDFromInt(c.AliasScids[0])
+				} else {
+					return NewShortChanIDFromInt(c.ChanId)
+				}
 			}
-			log.Printf("%s: Waiting for channel to become active.", n.name)
 		} else {
 
 			pending, err := n.runtime.rpc.PendingChannels(n.harness.Ctx, &lnd.PendingChannelsRequest{})
