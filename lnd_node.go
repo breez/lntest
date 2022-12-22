@@ -491,6 +491,7 @@ func (n *LndNode) WaitForChannelReady(channel *ChannelInfo) ShortChannelID {
 func (n *LndNode) CreateBolt11Invoice(options *CreateInvoiceOptions) *CreateInvoiceResult {
 	req := &lnd.Invoice{
 		ValueMsat: int64(options.AmountMsat),
+		Private:   options.IncludeHopHints,
 	}
 
 	if options.Description != nil {
