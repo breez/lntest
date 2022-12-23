@@ -43,6 +43,8 @@ type ClnNode struct {
 	runtime      *clnNodeRuntime
 	mtx          sync.Mutex
 	timesStarted int
+	socketDir    string
+	socketFile   string
 }
 
 type clnNodeRuntime struct {
@@ -112,6 +114,8 @@ func NewClnNodeFromBinary(h *TestHarness, m *Miner, name string, binary string, 
 		grpcHost:    host,
 		grpcPort:    grpcPort,
 		privkey:     privKey,
+		socketDir:   regtestDir,
+		socketFile:  "lightning-rpc",
 	}
 
 	h.AddStoppable(node)
@@ -324,6 +328,14 @@ func (n *ClnNode) PrivateKey() *secp256k1.PrivateKey {
 
 func (n *ClnNode) IsStarted() bool {
 	return n.runtime != nil
+}
+
+func (n *ClnNode) SocketDir() string {
+	return n.socketDir
+}
+
+func (n *ClnNode) SocketFile() string {
+	return n.socketFile
 }
 
 func (n *ClnNode) WaitForSync() {
