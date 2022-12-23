@@ -6,11 +6,9 @@ import (
 	"io"
 	"log"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -73,14 +71,6 @@ func NewTestHarness(t *testing.T, deadline time.Time, options ...HarnessOption) 
 		preserveLogs:  slices.Contains(options, PreserveLogs) || GetPreserveLogs(),
 		preserveState: slices.Contains(options, PreserveState) || GetPreserveState(),
 	}
-
-	// Handle shutdown gracefully
-	c := make(chan os.Signal)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-c
-		h.TearDown()
-	}()
 
 	return h
 }
