@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/breez/lntest/lnd"
@@ -135,6 +136,7 @@ func (n *LndNode) Start() {
 
 	var cleanups []*Cleanup
 	cmd := exec.CommandContext(n.harness.Ctx, n.binary, n.args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	logFile, err := os.OpenFile(
 		n.logFilePath,
 		os.O_RDWR|os.O_CREATE|os.O_APPEND,
@@ -161,11 +163,12 @@ func (n *LndNode) Start() {
 		Fn: func() error {
 			proc := cmd.Process
 			if proc != nil {
+				sig := syscall.SIGINT
 				if runtime.GOOS == "windows" {
-					return proc.Signal(os.Kill)
+					sig = syscall.SIGKILL
 				}
 
-				return proc.Signal(os.Interrupt)
+				return syscall.Kill(-proc.Pid, sig)
 			}
 
 			<-done

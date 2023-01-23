@@ -3,12 +3,12 @@ package lntest
 import (
 	"fmt"
 	"log"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"sync"
+	"syscall"
 
 	"github.com/niftynei/glightning/gbitcoin"
 )
@@ -102,6 +102,7 @@ func (m *Miner) Start() {
 	var cleanups []*Cleanup
 	log.Printf("starting %s on rpc port %d in dir %s...", m.binary, m.rpcPort, m.dir)
 	cmd := exec.CommandContext(m.harness.Ctx, m.binary, m.args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	err := cmd.Start()
 	CheckError(m.harness.T, err)
 	cleanups = append(cleanups, &Cleanup{
@@ -112,12 +113,12 @@ func (m *Miner) Start() {
 				return nil
 			}
 
-			sig := os.Interrupt
+			sig := syscall.SIGINT
 			if runtime.GOOS == "windows" {
-				sig = os.Kill
+				sig = syscall.SIGKILL
 			}
 
-			err := proc.Signal(sig)
+			err := syscall.Kill(-proc.Pid, sig)
 			if err != nil {
 				log.Printf("miner: Error sending signal %v: %v", sig, err)
 			}

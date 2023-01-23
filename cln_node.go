@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"runtime"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/breez/lntest/cln"
@@ -136,6 +137,7 @@ func (n *ClnNode) Start() {
 
 	var cleanups []*Cleanup
 	cmd := exec.CommandContext(n.harness.Ctx, n.binary, n.args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stderr, err := cmd.StderrPipe()
 	CheckError(n.harness.T, err)
 
@@ -152,11 +154,12 @@ func (n *ClnNode) Start() {
 		Fn: func() error {
 			proc := cmd.Process
 			if proc != nil {
+				sig := syscall.SIGINT
 				if runtime.GOOS == "windows" {
-					return proc.Signal(os.Kill)
+					sig = syscall.SIGKILL
 				}
 
-				return proc.Signal(os.Interrupt)
+				return syscall.Kill(-proc.Pid, sig)
 			}
 
 			<-done
