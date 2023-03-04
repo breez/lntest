@@ -369,7 +369,7 @@ func (n *ClnNode) WaitForSync() {
 	}
 }
 
-func (n *ClnNode) Fund(amountSat uint64) {
+func (n *ClnNode) GetNewAddress() string {
 	addrResponse, err := n.runtime.rpc.NewAddr(
 		n.harness.Ctx,
 		&cln.NewaddrRequest{
@@ -377,8 +377,12 @@ func (n *ClnNode) Fund(amountSat uint64) {
 		},
 	)
 	CheckError(n.harness.T, err)
+	return *addrResponse.Bech32
+}
 
-	n.miner.SendToAddress(*addrResponse.Bech32, amountSat)
+func (n *ClnNode) Fund(amountSat uint64) {
+	addr := n.GetNewAddress()
+	n.miner.SendToAddressAndMine(addr, amountSat, 1)
 	n.WaitForSync()
 }
 
@@ -498,6 +502,10 @@ func (n *ClnNode) CreateBolt11Invoice(options *CreateInvoiceOptions) *CreateInvo
 
 	if options.Preimage != nil {
 		req.Preimage = *options.Preimage
+	}
+
+	if options.Cltv != nil {
+		req.Cltv = options.Cltv
 	}
 
 	resp, err := n.runtime.rpc.Invoice(n.harness.Ctx, req)

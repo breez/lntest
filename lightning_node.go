@@ -18,6 +18,7 @@ type LightningNode interface {
 	PrivateKey() *secp256k1.PrivateKey
 
 	WaitForSync()
+	GetNewAddress() string
 	Fund(amountSat uint64)
 	ConnectPeer(peer LightningNode)
 	OpenChannel(peer LightningNode, options *OpenChannelOptions) *ChannelInfo
@@ -46,6 +47,7 @@ type CreateInvoiceOptions struct {
 	AmountMsat      uint64
 	Description     *string
 	Preimage        *[]byte
+	Cltv            *uint32
 	IncludeHopHints bool
 }
 

@@ -218,8 +218,11 @@ func (m *Miner) SendToAddress(addr string, amountSat uint64) {
 	log.Printf("miner: Sending %s btc to address %s", amountStr, addr)
 	_, err := m.runtime.rpc.SendToAddress(addr, amountStr)
 	CheckError(m.harness.T, err)
+}
 
-	m.MineBlocks(1)
+func (m *Miner) SendToAddressAndMine(addr string, amountSat uint64, blocks uint) {
+	m.SendToAddress(addr, amountSat)
+	m.MineBlocks(blocks)
 }
 
 func (m *Miner) GetBlockHeight() uint32 {
