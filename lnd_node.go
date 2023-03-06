@@ -397,6 +397,14 @@ func (n *LndNode) GetNewAddress() string {
 	return addrResponse.Address
 }
 
+func (n *LndNode) SendToAddress(addr string, amountSat uint64) {
+	_, err := n.runtime.rpc.SendCoins(n.harness.Ctx, &lnd.SendCoinsRequest{
+		Addr:   addr,
+		Amount: int64(amountSat),
+	})
+	CheckError(n.harness.T, err)
+}
+
 func (n *LndNode) Fund(amountSat uint64) {
 	addr := n.GetNewAddress()
 	n.miner.SendToAddressAndMine(addr, amountSat, 1)

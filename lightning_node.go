@@ -36,6 +36,7 @@ type LightningNode interface {
 	GetPeerFeatures(peerId []byte) map[uint32]string
 	GetRemoteNodeFeatures(nodeId []byte) map[uint32]string
 	GetChannels() []*ChannelDetails
+	SendToAddress(addr string, amountSat uint64)
 }
 
 type OpenChannelOptions struct {

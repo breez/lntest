@@ -380,6 +380,25 @@ func (n *ClnNode) GetNewAddress() string {
 	return *addrResponse.Bech32
 }
 
+func (n *ClnNode) SendToAddress(addr string, amountSat uint64) {
+	prep, err := n.runtime.rpc.TxPrepare(n.harness.Ctx, &cln.TxprepareRequest{
+		Outputs: []*cln.OutputDesc{
+			{
+				Address: addr,
+				Amount: &cln.Amount{
+					Msat: amountSat * 1000,
+				},
+			},
+		},
+	})
+	CheckError(n.harness.T, err)
+
+	_, err = n.runtime.rpc.TxSend(n.harness.Ctx, &cln.TxsendRequest{
+		Txid: prep.Txid,
+	})
+	CheckError(n.harness.T, err)
+}
+
 func (n *ClnNode) Fund(amountSat uint64) {
 	addr := n.GetNewAddress()
 	n.miner.SendToAddressAndMine(addr, amountSat, 1)
