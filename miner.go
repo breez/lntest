@@ -65,6 +65,8 @@ func NewMinerFromBinary(h *TestHarness, binary string) *Miner {
 		"-addresstype=bech32",
 		"-txindex",
 		"-fallbackfee=0.00000253",
+		"-debug=mempool",
+		"-debug=rpc",
 		fmt.Sprintf("-datadir=%s", bitcoindDir),
 		fmt.Sprintf("-rpcport=%d", rpcPort),
 		fmt.Sprintf("-rpcpassword=%s", btcPass),
