@@ -88,7 +88,6 @@ func NewClnNodeFromBinary(h *TestHarness, m *Miner, name string, binary string, 
 		"--log-level=debug",
 		"--bitcoin-rpcuser=btcuser",
 		"--bitcoin-rpcpassword=btcpass",
-		"--allow-deprecated-apis=false",
 		"--dev-bitcoind-poll=1",
 		"--dev-fast-gossip",
 		"--dev-fast-reconnect",
@@ -446,37 +445,32 @@ func (n *ClnNode) WaitForChannelReady(channel *ChannelInfo) ShortChannelID {
 	peerId := channel.GetPeer(n).NodeId()
 
 	for {
-		peers, err := n.runtime.rpc.ListPeers(n.harness.Ctx, &cln.ListpeersRequest{
+		resp, err := n.runtime.rpc.ListPeerChannels(n.harness.Ctx, &cln.ListpeerchannelsRequest{
 			Id: peerId,
 		})
 		CheckError(n.harness.T, err)
 
-		if len(peers.Peers) == 0 {
-			n.harness.T.Fatalf("Peer %x not found", peerId)
-		}
-
-		peer := peers.Peers[0]
-		if peer.Channels == nil {
+		if resp.Channels == nil {
 			n.harness.T.Fatal("no channels for peer")
 		}
 
 		channelIndex := slices.IndexFunc(
-			peer.Channels,
-			func(pc *cln.ListpeersPeersChannels) bool {
+			resp.Channels,
+			func(pc *cln.ListpeerchannelsChannels) bool {
 				return bytes.Equal(pc.FundingTxid, channel.FundingTxId) &&
 					*pc.FundingOutnum == channel.FundingTxOutnum
 			},
 		)
 
 		if channelIndex >= 0 {
-			peerChannel := peer.Channels[channelIndex]
-			if peerChannel.State == cln.ListpeersPeersChannels_CHANNELD_AWAITING_LOCKIN {
+			peerChannel := resp.Channels[channelIndex]
+			if *peerChannel.State == cln.ListpeerchannelsChannels_CHANNELD_AWAITING_LOCKIN {
 				log.Printf("%s: Channel state is CHANNELD_AWAITING_LOCKIN, mining some blocks.", n.name)
 				n.miner.MineBlocks(6)
 				n.WaitForSync()
 			}
 
-			if peerChannel.State == cln.ListpeersPeersChannels_CHANNELD_NORMAL {
+			if *peerChannel.State == cln.ListpeerchannelsChannels_CHANNELD_NORMAL {
 				channelsResp, err := n.runtime.rpc.ListChannels(n.harness.Ctx, &cln.ListchannelsRequest{
 					ShortChannelId: peerChannel.ShortChannelId,
 				})
@@ -686,7 +680,7 @@ func (n *ClnNode) GetInvoice(paymentHash []byte) *GetInvoiceResponse {
 		Description:        invoice.Description,
 		ExpiresAt:          invoice.ExpiresAt,
 		PaidAt:             invoice.PaidAt,
-		PayerNote:          invoice.PayerNote,
+		PayerNote:          invoice.InvreqPayerNote,
 		PaymentHash:        invoice.PaymentHash,
 		PaymentPreimage:    invoice.PaymentPreimage,
 		IsPaid:             invoice.Status == cln.ListinvoicesInvoices_PAID,
