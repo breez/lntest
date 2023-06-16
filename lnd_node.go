@@ -702,6 +702,16 @@ func (n *LndNode) GetChannels() []*ChannelDetails {
 	var result []*ChannelDetails
 	for _, c := range channels.Channels {
 		p, _ := hex.DecodeString(c.RemotePubkey)
+		var localAlias *ShortChannelID
+		var remoteAlias *ShortChannelID
+		if len(c.AliasScids) > 0 {
+			l := NewShortChanIDFromInt(c.AliasScids[0])
+			localAlias = &l
+		}
+		if len(c.AliasScids) > 1 {
+			r := NewShortChanIDFromInt(c.AliasScids[1])
+			remoteAlias = &r
+		}
 		result = append(result, &ChannelDetails{
 			PeerId:              p,
 			ShortChannelID:      NewShortChanIDFromInt(c.ChanId),
@@ -710,6 +720,8 @@ func (n *LndNode) GetChannels() []*ChannelDetails {
 			RemoteReserveMsat:   c.RemoteConstraints.ChanReserveSat * 1000,
 			LocalSpendableMsat:  uint64(c.LocalBalance) - c.LocalConstraints.ChanReserveSat*1000,
 			RemoteSpendableMsat: uint64(c.RemoteBalance) - c.RemoteConstraints.ChanReserveSat*1000,
+			LocalAlias:          localAlias,
+			RemoteAlias:         remoteAlias,
 		})
 	}
 

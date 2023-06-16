@@ -580,26 +580,39 @@ func (n *ClnNode) GetRoute(destination []byte, amountMsat uint64) *Route {
 }
 
 func (n *ClnNode) GetChannels() []*ChannelDetails {
-	peers, err := n.runtime.rpc.ListPeers(n.harness.Ctx, &cln.ListpeersRequest{})
+	resp, err := n.runtime.rpc.ListPeerChannels(n.harness.Ctx, &cln.ListpeerchannelsRequest{})
 	CheckError(n.harness.T, err)
 
 	var result []*ChannelDetails
-	for _, p := range peers.Peers {
-		for _, c := range p.Channels {
-			var s ShortChannelID = NewShortChanIDFromInt(0)
-			if c.ShortChannelId != nil {
-				s = NewShortChanIDFromString(*c.ShortChannelId)
-			}
-			result = append(result, &ChannelDetails{
-				PeerId:              p.Id,
-				ShortChannelID:      s,
-				CapacityMsat:        c.TotalMsat.Msat,
-				LocalReserveMsat:    c.OurReserveMsat.Msat,
-				RemoteReserveMsat:   c.TheirReserveMsat.Msat,
-				LocalSpendableMsat:  c.SpendableMsat.Msat,
-				RemoteSpendableMsat: c.ReceivableMsat.Msat,
-			})
+	for _, c := range resp.Channels {
+		var s ShortChannelID = NewShortChanIDFromInt(0)
+		if c.ShortChannelId != nil {
+			s = NewShortChanIDFromString(*c.ShortChannelId)
 		}
+		var localAlias *ShortChannelID
+		var remoteAlias *ShortChannelID
+		if c.Alias != nil {
+			if c.Alias.Local != nil {
+				l := NewShortChanIDFromString(*c.Alias.Local)
+				localAlias = &l
+			}
+
+			if c.Alias.Remote != nil {
+				r := NewShortChanIDFromString(*c.Alias.Remote)
+				remoteAlias = &r
+			}
+		}
+		result = append(result, &ChannelDetails{
+			PeerId:              c.PeerId,
+			ShortChannelID:      s,
+			CapacityMsat:        c.TotalMsat.Msat,
+			LocalReserveMsat:    c.OurReserveMsat.Msat,
+			RemoteReserveMsat:   c.TheirReserveMsat.Msat,
+			LocalSpendableMsat:  c.SpendableMsat.Msat,
+			RemoteSpendableMsat: c.ReceivableMsat.Msat,
+			LocalAlias:          localAlias,
+			RemoteAlias:         remoteAlias,
+		})
 	}
 
 	return result

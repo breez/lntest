@@ -157,4 +157,6 @@ type ChannelDetails struct {
 	RemoteReserveMsat   uint64
 	LocalSpendableMsat  uint64
 	RemoteSpendableMsat uint64
+	LocalAlias          *ShortChannelID
+	RemoteAlias         *ShortChannelID
 }
