@@ -847,9 +847,17 @@ func (n *LndNode) initWallet(conn grpc.ClientConnInterface) ([]byte, *secp256k1.
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to derive child 2: %w", err)
 	}
+	k, err = hdkeychain.NewKeyFromString(k.String())
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to convert child 2 to/from string: %w", err)
+	}
 	k, err = k.DeriveNonStandard(6 + 2147483648)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to derive child 3: %w", err)
+	}
+	k, err = hdkeychain.NewKeyFromString(k.String())
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to convert child 3 to/from string: %w", err)
 	}
 	k, err = k.DeriveNonStandard(0)
 	if err != nil {
