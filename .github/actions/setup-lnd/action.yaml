@@ -1,0 +1,49 @@
+name: 'Setup LND'
+description: 'Set up LND for both LSP and Client on the runner'
+
+inputs:
+  lsp-ref:
+    description: 'The Git reference for the LSP version of LND'
+    required: true
+    default: 'breez-node-v0.16.2-beta'
+
+  client-ref:
+    description: 'The Git reference for the Client version of LND'
+    required: true
+    default: 'v0.16.2-breez'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Go 1.x
+      uses: actions/setup-go@v2
+      with:
+        go-version: ^1.16
+
+    - name: Checkout LND for LSP
+      uses: actions/checkout@v2
+      with:
+        repository: breez/lnd
+        ref: ${{ inputs.lsp-ref }}
+        path: lnd_lsp
+
+    - name: Build LND for LSP
+      run: |
+        cd lnd_lsp
+        env GOPATH=~/go_lnd_lsp make install
+        ls ~/go_lnd_lsp/bin/lnd
+      shell: bash
+
+    - name: Checkout LND for Client
+      uses: actions/checkout@v2
+      with:
+        repository: breez/lnd
+        ref: ${{ inputs.client-ref }}
+        path: lnd_client
+
+    - name: Build LND for Client
+      run: |
+        cd lnd_client
+        env GOPATH=~/go_lnd_client make install
+        ls ~/go_lnd_client/bin/lnd
+      shell: bash

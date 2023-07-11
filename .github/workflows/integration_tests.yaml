@@ -1,0 +1,82 @@
+name: integration tests
+on: [push]
+jobs:
+  setup:
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      ############################
+      # Build and Cache Bitcoind #
+      ############################
+
+      - name: Cache Bitcoin Core
+        id: cache-bitcoin
+        uses: actions/cache@v2
+        with:
+          path: ~/bitcoin-core-22.0
+          key: bitcoin-core-22.0
+
+      - name: Set up Bitcoin Core
+        if: steps.cache-bitcoin.outputs.cache-hit != 'true'
+        uses: ./.github/actions/setup-bitcoin
+        with:
+          bitcoin-version: '22.0'
+          
+      - name: Copy Bitcoin binaries to bin folder
+        run: |
+          sudo cp ~/bitcoin-core-22.0/bitcoin-22.0/bin/bitcoind /usr/bin/
+          sudo cp ~/bitcoin-core-22.0/bitcoin-22.0/bin/bitcoin-cli /usr/bin/
+
+      ########################
+      # Build and lightningd #
+      ########################
+
+      - name: Set up Core Lightning
+        uses: ./.github/actions/setup-clightning
+        with:
+          checkout-version: 'v23.05.1'
+
+      ######################################
+      # Build and Cache LND Client and LSP #
+      ######################################
+
+      - name: Cache LND
+        id: cache-lnd
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~/go_lnd_lsp/bin/lnd
+            ~/go_lnd_client/bin/lnd
+          key: go_lnd_lsp
+
+      - name: Set up LND
+        if: steps.cache-lnd.outputs.cache-hit != 'true'
+        uses: ./.github/actions/setup-lnd
+        with:
+          lsp-ref: 'breez-node-v0.16.2-beta'
+          client-ref: 'v0.16.2-breez'
+
+      #############
+      # Run Tests #
+      #############
+
+      - name: Run tests
+        run: |
+          go get github.com/breez/lspd/itest
+          go test -timeout 20m -v \
+            --bitcoindexec /usr/bin/bitcoind \
+            --bitcoincliexec /usr/bin/bitcoin-cli \
+            --lightningdexec ${GITHUB_WORKSPACE}/lightning_git/lightningd/lightningd \
+            --lndexec ~/go_lnd_lsp/bin/lnd \
+            --testdir ~/test_state \
+            --preservestate
+          find ~/test_state -type s -exec rm -f {} \;
+        shell: bash
+
+      - name: Upload test_state as artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: test_state_artifact
+          path: ~/test_state

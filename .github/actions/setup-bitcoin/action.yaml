@@ -1,0 +1,23 @@
+name: 'Setup Bitcoin Core'
+description: 'Download and install Bitcoin Core'
+inputs:
+  bitcoin-version:
+    description: 'Version of Bitcoin Core'
+    required: true
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y axel
+      shell: bash
+      
+    - name: Download Bitcoin Core
+      run: |
+        mkdir -p ~/bitcoin-core-${{ inputs.bitcoin-version }}
+        cd ~/bitcoin-core-${{ inputs.bitcoin-version }}
+        axel https://bitcoin.org/bin/bitcoin-core-${{ inputs.bitcoin-version }}/bitcoin-${{ inputs.bitcoin-version }}-x86_64-linux-gnu.tar.gz
+        tar -xzf bitcoin-${{ inputs.bitcoin-version }}-x86_64-linux-gnu.tar.gz
+        rm bitcoin-${{ inputs.bitcoin-version }}-x86_64-linux-gnu.tar.gz
+      shell: bash
