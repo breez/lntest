@@ -6,9 +6,10 @@ require (
 	github.com/btcsuite/btcd v0.23.3
 	github.com/btcsuite/btcd/btcec/v2 v2.2.1
 	github.com/btcsuite/btcd/btcutil v1.1.2
+	github.com/btcsuite/btcd/chaincfg/chainhash v1.0.1
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1
+	github.com/elementsproject/glightning v0.0.0-20230525134205-ef34d849f564
 	github.com/lightningnetwork/lnd v0.15.4-beta
-	github.com/niftynei/glightning v0.8.2
 	go.uber.org/multierr v1.6.0
 	golang.org/x/exp v0.0.0-20221012211006-4de253d81b95
 	google.golang.org/grpc v1.50.1
@@ -18,7 +19,6 @@ require (
 require (
 	github.com/Yawning/aez v0.0.0-20211027044916-e49e68abd344 // indirect
 	github.com/aead/siphash v1.0.1 // indirect
-	github.com/btcsuite/btcd/chaincfg/chainhash v1.0.1 // indirect
 	github.com/btcsuite/btclog v0.0.0-20170628155309-84c8d2346e9f // indirect
 	github.com/btcsuite/btcwallet v0.16.1 // indirect
 	github.com/btcsuite/btcwallet/walletdb v1.4.0 // indirect
@@ -36,4 +36,4 @@ require (
 	google.golang.org/genproto v0.0.0-20210617175327-b9e0b3197ced // indirect
 )
 
-replace github.com/niftynei/glightning v0.8.2 => github.com/breez/glightning v0.0.0-20221201090905-688d312b61f4
+replace github.com/elementsproject/glightning => github.com/breez/glightning v0.0.1-breez

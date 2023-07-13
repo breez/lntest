@@ -10,7 +10,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/niftynei/glightning/gbitcoin"
+	"github.com/elementsproject/glightning/gbitcoin"
 )
 
 type Miner struct {
