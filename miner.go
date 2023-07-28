@@ -1,14 +1,19 @@
 package lntest
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"log"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/elementsproject/glightning/gbitcoin"
 )
@@ -24,6 +29,7 @@ type Miner struct {
 	zmqBlockAddress string
 	zmqTxAddress    string
 	isInitialized   bool
+	timesStarted    int
 	runtime         *minerRuntime
 	mtx             sync.Mutex
 }
@@ -132,6 +138,13 @@ func (m *Miner) Start() {
 			return err
 		},
 	})
+	err = m.waitForLog("init message: Done loading")
+	if err != nil {
+		PerformCleanup(cleanups)
+		m.harness.T.Fatalf("Error waiting for bitcoind to start: %v", err)
+	}
+	m.timesStarted += 1
+
 	log.Printf("miner: bitcoind started (%d)!", cmd.Process.Pid)
 
 	rpc := gbitcoin.NewBitcoin(m.rpcUser, m.rpcPass)
@@ -182,6 +195,47 @@ func (m *Miner) initializeFirstRun() error {
 
 	m.isInitialized = true
 	return nil
+}
+
+func (n *Miner) waitForLog(phrase string) error {
+	logfilePath := filepath.Join(n.dir, "regtest", "debug.log")
+	// at startup we need to wait for the file to open
+	for time.Now().Before(n.harness.Deadline()) {
+		if _, err := os.Stat(logfilePath); os.IsNotExist(err) {
+			<-time.After(waitSleepInterval)
+			continue
+		}
+		break
+	}
+	logfile, _ := os.Open(logfilePath)
+	defer logfile.Close()
+
+	reader := bufio.NewReader(logfile)
+	counted := 0
+	for time.Now().Before(n.harness.Deadline()) {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				<-time.After(waitSleepInterval)
+			} else {
+				return err
+			}
+		}
+		m, err := regexp.MatchString(phrase, line)
+		if err != nil {
+			return err
+		}
+
+		if m {
+			if counted == n.timesStarted {
+				return nil
+			}
+
+			counted += 1
+		}
+	}
+
+	return fmt.Errorf("unable to find \"%s\" in %s", phrase, logfilePath)
 }
 
 func (m *Miner) Stop() error {
