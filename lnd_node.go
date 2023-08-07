@@ -418,6 +418,11 @@ func (n *LndNode) ConnectPeer(peer LightningNode) {
 			Host:   fmt.Sprintf("%s:%d", peer.Host(), peer.Port()),
 		},
 	})
+
+	if err != nil && strings.Contains(err.Error(), "already connected to peer") {
+		return
+	}
+
 	CheckError(n.harness.T, err)
 }
 
