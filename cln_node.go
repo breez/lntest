@@ -433,10 +433,11 @@ func (n *ClnNode) OpenChannel(peer LightningNode, options *OpenChannelOptions) *
 	})
 	CheckError(n.harness.T, err)
 
+	txid := reverseBytes(fundResult.Txid[:])
 	return &ChannelInfo{
 		From:            n,
 		To:              peer,
-		FundingTxId:     fundResult.Txid,
+		FundingTxId:     txid,
 		FundingTxOutnum: fundResult.Outnum,
 	}
 }
@@ -450,19 +451,18 @@ func (n *ClnNode) WaitForChannelReady(channel *ChannelInfo) ShortChannelID {
 			Id: peerId,
 		})
 		CheckError(n.harness.T, err)
-
 		if resp.Channels == nil {
 			n.harness.T.Fatal("no channels for peer")
 		}
 
+		channelTxId := reverseBytes(channel.FundingTxId[:])
 		channelIndex := slices.IndexFunc(
 			resp.Channels,
 			func(pc *cln.ListpeerchannelsChannels) bool {
-				return bytes.Equal(pc.FundingTxid, channel.FundingTxId) &&
+				return bytes.Equal(pc.FundingTxid, channelTxId) &&
 					*pc.FundingOutnum == channel.FundingTxOutnum
 			},
 		)
-
 		if channelIndex >= 0 {
 			peerChannel := resp.Channels[channelIndex]
 			if *peerChannel.State == cln.ListpeerchannelsChannels_CHANNELD_AWAITING_LOCKIN {
@@ -754,4 +754,12 @@ func (n *ClnNode) mapFeatures(f []byte) map[uint32]string {
 		}
 	}
 	return r
+}
+
+func reverseBytes(b []byte) []byte {
+	for i, j := 0, len(b)-1; i < j; i, j = i+1, j-1 {
+		b[i], b[j] = b[j], b[i]
+	}
+
+	return b
 }
