@@ -92,6 +92,8 @@ func NewClnNodeFromBinary(h *TestHarness, m *Miner, name string, binary string, 
 		"--dev-bitcoind-poll=1",
 		"--dev-fast-gossip",
 		"--dev-fast-reconnect",
+		"--developer",
+
 		fmt.Sprintf("--dev-force-privkey=%x", s),
 		fmt.Sprintf("--lightning-dir=%s", lightningdDir),
 		fmt.Sprintf("--bitcoin-datadir=%s", m.dir),
