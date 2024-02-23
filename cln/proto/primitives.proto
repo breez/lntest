@@ -37,20 +37,30 @@ enum ChannelState {
 	Onchain = 8;
 	DualopendOpenInit = 9;
 	DualopendAwaitingLockin = 10;
+	ChanneldAwaitingSplice = 11;
 }
 
 enum HtlcState {
-      SentAddHtlc = 0;
-      SentAddCommit = 1;
-      RcvdAddRevocation = 2;
-      RcvdAddAckCommit = 3;
-      SentAddAckRevocation = 4;
-      RcvdAddAckRevocation = 5;
-      RcvdRemoveHtlc = 6;
-      RcvdRemoveCommit = 7;
-      SentRemoveRevocation = 8;
-      SentRemoveAckCommit = 9;
-      RcvdRemoveAckRevocation = 10;
+	SentAddHtlc = 0;
+	SentAddCommit = 1;
+	RcvdAddRevocation = 2;
+	RcvdAddAckCommit = 3;
+	SentAddAckRevocation = 4;
+	RcvdAddAckRevocation = 5;
+	RcvdRemoveHtlc = 6;
+	RcvdRemoveCommit = 7;
+	SentRemoveRevocation = 8;
+	SentRemoveAckCommit = 9;
+	RcvdRemoveAckRevocation = 10;
+	RcvdAddHtlc = 11;
+	RcvdAddCommit = 12;
+	SentAddRevocation = 13;
+	SentAddAckCommit = 14;
+	SentRemoveHtlc = 15;
+	SentRemoveCommit = 16;
+	RcvdRemoveRevocation = 17;
+	RcvdRemoveAckCommit = 18;
+	SentRemoveAckRevocation = 19;
 }
 
 message ChannelStateChangeCause {}
@@ -94,6 +104,15 @@ message TlvEntry {
 	uint64 type = 1;
 	bytes value = 2;
 }
+
 message TlvStream {
 	repeated TlvEntry entries = 1;
+}
+
+enum ChannelTypeName {
+  static_remotekey_even = 0;
+  anchor_outputs_even = 1;
+  anchors_zero_fee_htlc_tx_even = 2;
+  scid_alias_even = 3;
+  zeroconf_even = 4;
 }
