@@ -471,21 +471,10 @@ func (n *ClnNode) WaitForChannelReady(channel *ChannelInfo) ShortChannelID {
 				log.Printf("%s: Channel state is CHANNELD_AWAITING_LOCKIN, mining some blocks.", n.name)
 				n.miner.MineBlocks(6)
 				n.WaitForSync()
+				continue
 			}
 
-			if *peerChannel.State == cln.ListpeerchannelsChannels_CHANNELD_NORMAL {
-				channelsResp, err := n.runtime.rpc.ListChannels(n.harness.Ctx, &cln.ListchannelsRequest{
-					ShortChannelId: peerChannel.ShortChannelId,
-				})
-				CheckError(n.harness.T, err)
-
-				// Wait for the channel to end up in the listchannels response.
-				if len(channelsResp.Channels) > 0 &&
-					channelsResp.Channels[0].Active {
-					log.Printf("%s: Channel active with chan id: %s", n.name, channelsResp.Channels[0].ShortChannelId)
-					return NewShortChanIDFromString(channelsResp.Channels[0].ShortChannelId)
-				}
-			}
+			return NewShortChanIDFromString(*peerChannel.ShortChannelId)
 		}
 
 		if time.Now().After(n.harness.Deadline()) {
