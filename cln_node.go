@@ -28,25 +28,28 @@ import (
 )
 
 type ClnNode struct {
-	name         string
-	binary       string
-	args         []string
-	regtestDir   string
-	logfilePath  string
-	nodeId       []byte
-	harness      *TestHarness
-	miner        *Miner
-	dir          string
-	host         string
-	port         uint32
-	grpcHost     string
-	grpcPort     uint32
-	privkey      *secp256k1.PrivateKey
-	runtime      *clnNodeRuntime
-	mtx          sync.Mutex
-	timesStarted int
-	socketDir    string
-	socketFile   string
+	name           string
+	binary         string
+	args           []string
+	regtestDir     string
+	logfilePath    string
+	nodeId         []byte
+	harness        *TestHarness
+	miner          *Miner
+	dir            string
+	host           string
+	port           uint32
+	grpcHost       string
+	grpcPort       uint32
+	caCertPath     string
+	clientCertPath string
+	clientKeyPath  string
+	privkey        *secp256k1.PrivateKey
+	runtime        *clnNodeRuntime
+	mtx            sync.Mutex
+	timesStarted   int
+	socketDir      string
+	socketFile     string
 }
 
 type clnNodeRuntime struct {
@@ -104,22 +107,25 @@ func NewClnNodeFromBinary(h *TestHarness, m *Miner, name string, binary string, 
 	}, extraArgs...)
 
 	node := &ClnNode{
-		name:        name,
-		binary:      binary,
-		args:        args,
-		regtestDir:  regtestDir,
-		logfilePath: logfilePath,
-		nodeId:      p,
-		harness:     h,
-		miner:       m,
-		dir:         lightningdDir,
-		port:        port,
-		host:        host,
-		grpcHost:    host,
-		grpcPort:    grpcPort,
-		privkey:     privKey,
-		socketDir:   regtestDir,
-		socketFile:  "lightning-rpc",
+		name:           name,
+		binary:         binary,
+		args:           args,
+		regtestDir:     regtestDir,
+		logfilePath:    logfilePath,
+		nodeId:         p,
+		harness:        h,
+		miner:          m,
+		dir:            lightningdDir,
+		port:           port,
+		host:           host,
+		grpcHost:       host,
+		grpcPort:       grpcPort,
+		caCertPath:     filepath.Join(regtestDir, "ca.pem"),
+		clientCertPath: filepath.Join(regtestDir, "client.pem"),
+		clientKeyPath:  filepath.Join(regtestDir, "client-key.pem"),
+		privkey:        privKey,
+		socketDir:      regtestDir,
+		socketFile:     "lightning-rpc",
 	}
 
 	h.AddStoppable(node)
@@ -202,7 +208,7 @@ func (n *ClnNode) Start() {
 	}
 	n.timesStarted += 1
 
-	pemServerCA, err := os.ReadFile(filepath.Join(n.regtestDir, "ca.pem"))
+	pemServerCA, err := os.ReadFile(n.caCertPath)
 	if err != nil {
 		PerformCleanup(cleanups)
 		n.harness.T.Fatalf("%s: Failed to read ca.pem: %v", n.name, err)
@@ -215,8 +221,8 @@ func (n *ClnNode) Start() {
 	}
 
 	clientCert, err := tls.LoadX509KeyPair(
-		filepath.Join(n.regtestDir, "client.pem"),
-		filepath.Join(n.regtestDir, "client-key.pem"),
+		n.clientCertPath,
+		n.clientKeyPath,
 	)
 	if err != nil {
 		PerformCleanup(cleanups)
@@ -342,6 +348,22 @@ func (n *ClnNode) SocketDir() string {
 
 func (n *ClnNode) SocketFile() string {
 	return n.socketFile
+}
+
+func (n *ClnNode) GrpcPort() uint32 {
+	return n.grpcPort
+}
+
+func (n *ClnNode) CaCertPath() string {
+	return n.caCertPath
+}
+
+func (n *ClnNode) ClientCertPath() string {
+	return n.clientCertPath
+}
+
+func (n *ClnNode) ClientKeyPath() string {
+	return n.clientKeyPath
 }
 
 func (n *ClnNode) WaitForSync() {
