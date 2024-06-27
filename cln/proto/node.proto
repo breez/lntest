@@ -631,7 +631,6 @@ message InvoiceRequest {
 	optional uint64 expiry = 7;
 	repeated string fallbacks = 4;
 	optional bytes preimage = 5;
-	optional bool exposeprivatechannels = 8;
 	optional uint32 cltv = 6;
 	optional bool deschashonly = 9;
 }

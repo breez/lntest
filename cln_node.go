@@ -520,7 +520,6 @@ func (n *ClnNode) CreateBolt11Invoice(options *CreateInvoiceOptions) *CreateInvo
 				},
 			},
 		},
-		Exposeprivatechannels: &options.IncludeHopHints,
 	}
 
 	if options.Description != nil {
